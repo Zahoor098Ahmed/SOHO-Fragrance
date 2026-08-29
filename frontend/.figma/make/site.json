@@ -1,0 +1,10 @@
+{
+  "description": "Create stunning, nature-inspired color palettes and attractive front-end designs effortlessly, perfect for designers and developers seeking aesthetic appeal.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
