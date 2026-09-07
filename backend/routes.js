@@ -1,10 +1,47 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import multer from "multer";
+import path from "path";
+import crypto from "crypto";
 import { User, Product, Order, Config, Contact, Review, SmtpAccount, Notification } from "./models.js";
-import { sendOTP } from "./email.js";
+import { sendOTP, sendOrderConfirmationEmail, sendOrderReceivedPendingEmail } from "./email.js";
 
 const router = express.Router();
+
+// High Security Multer Storage for Payment Receipts
+const receiptStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, path.join(process.cwd(), "uploads", "receipts"));
+  },
+  filename: (req, file, cb) => {
+    // Cryptographically secure randomized filename to prevent directory traversal and overwrite attacks
+    const randomHex = crypto.randomBytes(16).toString("hex");
+    const safeExt = path.extname(file.originalname).toLowerCase().replace(/[^a-z0-9.]/g, "");
+    cb(null, `receipt-${Date.now()}-${randomHex}${safeExt}`);
+  }
+});
+
+// File filter: Strictly restrict to images (JPEG, PNG, WebP)
+const receiptFileFilter = (req, file, cb) => {
+  const allowedMimeTypes = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+  const allowedExtensions = [".jpg", ".jpeg", ".png", ".webp"];
+  const ext = path.extname(file.originalname).toLowerCase();
+
+  if (allowedMimeTypes.includes(file.mimetype) && allowedExtensions.includes(ext)) {
+    cb(null, true);
+  } else {
+    cb(new Error("Security violation: Only valid image files (JPG, PNG, WebP) are allowed."));
+  }
+};
+
+const uploadReceipt = multer({
+  storage: receiptStorage,
+  fileFilter: receiptFileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5 MB maximum limit to prevent denial of service
+  }
+});
 
 // Middleware: Authenticate Request using JWT
 export const requireAuth = async (req, res, next) => {
@@ -21,6 +58,21 @@ export const requireAuth = async (req, res, next) => {
   } catch (err) {
     return res.status(403).json({ error: "Invalid or expired token." });
   }
+};
+
+// Middleware: Optional Authentication (Extracts user if present, allows guest if not)
+export const optionalAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.split(" ")[1];
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || "fallback_secret");
+      req.user = decoded;
+    } catch (err) {
+      // Ignore token failure for guest checkout
+    }
+  }
+  next();
 };
 
 // Middleware: Require Admin role
@@ -231,9 +283,12 @@ router.post("/auth/login", async (req, res) => {
     res.json({
       token,
       user: {
+        id: user._id,
         email: user.email,
         name: user.name,
-        role: user.role
+        role: user.role,
+        cart: user.cart || [],
+        wishlist: user.wishlist || []
       }
     });
   } catch (err) {
@@ -252,8 +307,12 @@ router.post("/auth/verify-2fa", async (req, res) => {
 
   try {
     const user = await User.findOne({ email: emailKey });
-    if (!user) {
-      return res.status(404).json({ error: "User not found." });
+    if (!user || !user.isVerified) {
+      return res.status(400).json({ error: "Account not found or unverified." });
+    }
+
+    if (user.status === "Inactive") {
+      return res.status(403).json({ error: "Your account has been disabled. Please contact the administrator." });
     }
 
     if (user.role !== "admin" && user.role !== "superadmin") {
@@ -278,13 +337,39 @@ router.post("/auth/verify-2fa", async (req, res) => {
     res.json({
       token,
       user: {
+        id: user._id,
         email: user.email,
         name: user.name,
-        role: user.role
+        role: user.role,
+        cart: user.cart || [],
+        wishlist: user.wishlist || []
       }
     });
   } catch (err) {
     res.status(500).json({ error: "Server 2FA verification error." });
+  }
+});
+
+// PUT: Sync cart and wishlist for persistent user storage in MongoDB
+router.put("/auth/sync-cart-wishlist", optionalAuth, async (req, res) => {
+  const { cart, wishlist, email } = req.body;
+  try {
+    let query = null;
+    if (req.user && req.user.id) {
+      query = { _id: req.user.id };
+    } else if (email) {
+      query = { email: String(email).toLowerCase().trim() };
+    }
+
+    if (query) {
+      const updates = {};
+      if (Array.isArray(cart)) updates.cart = cart;
+      if (Array.isArray(wishlist)) updates.wishlist = wishlist;
+      await User.updateOne(query, { $set: updates });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to sync cart and wishlist." });
   }
 });
 
@@ -405,55 +490,166 @@ router.delete("/products/:id", requireAuth, requireAdmin, async (req, res) => {
 // 3. ORDERS MODULE
 // ==========================================
 
-// POST: Place a new order (Require authenticated User, deduct stock, generate track ID)
-router.post("/orders", requireAuth, async (req, res) => {
-  const { customer, phone, email, items, amount, payment, city, address, province, cart } = req.body;
+// POST: Secure Payment Receipt Upload (Strict mime/extension check, max 5MB, random filename)
+router.post("/orders/upload-receipt", optionalAuth, (req, res) => {
+  uploadReceipt.single("receipt")(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({ error: "File size exceeds 5MB limit. Please upload a smaller image." });
+      }
+      return res.status(400).json({ error: `Upload error: ${err.message}` });
+    } else if (err) {
+      return res.status(400).json({ error: err.message });
+    }
 
-  if (!customer || !phone || !email || !items || !amount || !payment || !city || !address) {
-    return res.status(400).json({ error: "Missing order information details." });
+    if (!req.file) {
+      return res.status(400).json({ error: "No receipt file uploaded." });
+    }
+
+    // Return the safe relative URL path
+    const fileUrl = `/uploads/receipts/${req.file.filename}`;
+    res.json({
+      success: true,
+      receiptUrl: fileUrl,
+      fileName: req.file.filename
+    });
+  });
+});
+
+// POST: Place a new order (Supports Authenticated & Guest checkouts, deductions, payment verification)
+router.post("/orders", optionalAuth, async (req, res) => {
+  const { customer, phone, email, items, amount, payment, city, address, province, cart, paymentReceipt, transactionRef } = req.body;
+
+  // Strict Validation: Customer details are strictly mandatory
+  if (!customer || String(customer).trim().length < 2) {
+    return res.status(400).json({ error: "Customer Full Name is mandatory to place an order." });
   }
+  if (!phone || String(phone).replace(/\D/g, "").length < 10) {
+    return res.status(400).json({ error: "A valid Phone Number (minimum 10-11 digits) is mandatory for courier delivery." });
+  }
+  if (!email || !String(email).includes("@") || !String(email).includes(".")) {
+    return res.status(400).json({ error: "A valid Email Address is mandatory to receive your order invoice and tracking." });
+  }
+  if (!address || String(address).trim().length < 5) {
+    return res.status(400).json({ error: "Complete Street Delivery Address (House/Flat No, Street, Area) is mandatory." });
+  }
+  if (!city || String(city).trim().length < 2) {
+    return res.status(400).json({ error: "Destination City is mandatory for parcel delivery." });
+  }
+  if (!items || !amount || !payment) {
+    return res.status(400).json({ error: "Cart items, total amount, and payment method are required." });
+  }
+
+  // Security: Sanitize inputs to prevent script injection and buffer overflows
+  const cleanCustomer = String(customer).trim().slice(0, 100);
+  const cleanPhone = String(phone).trim().slice(0, 30);
+  const cleanEmail = String(email).toLowerCase().trim().slice(0, 100);
+  const cleanCity = String(city).trim().slice(0, 50);
+  const cleanAddress = String(address).trim().slice(0, 250);
+  const cleanProvince = String(province || "Sindh").trim().slice(0, 50);
+  const cleanTransactionRef = transactionRef ? String(transactionRef).trim().slice(0, 50) : "";
+  const cleanReceipt = paymentReceipt ? String(paymentReceipt).trim().slice(0, 250) : "";
+
+  // Determine initial payment and order state
+  const isBankTransfer = payment.toLowerCase().includes("bank") ||
+    payment.toLowerCase().includes("transfer") ||
+    payment.toLowerCase().includes("jazzcash") ||
+    payment.toLowerCase().includes("easypaisa");
+
+  const initialStatus = isBankTransfer ? "Pending Verification" : "Pending";
+  const initialPaymentStatus = isBankTransfer ? "Pending Verification" : "Unpaid";
 
   try {
     // Generate secure order tracking number
     const trackingId = `#ORD-${Math.floor(1000 + Math.random() * 9000)}`;
 
+    // Automatically link order to user account if logged in or if email matches registered user
+    let resolvedUserId = req.user ? req.user.id : undefined;
+    if (!resolvedUserId && req.body.userId) {
+      resolvedUserId = req.body.userId;
+    }
+    if (!resolvedUserId) {
+      const matchedUser = await User.findOne({ email: cleanEmail });
+      if (matchedUser) resolvedUserId = matchedUser._id;
+    }
+
     const newOrder = new Order({
       id: trackingId,
-      userId: req.user.id,
-      customer,
-      phone,
-      email: email.toLowerCase().trim(),
+      userId: resolvedUserId,
+      customer: cleanCustomer,
+      phone: cleanPhone,
+      email: cleanEmail,
       items,
       amount,
       payment,
-      status: "Pending",
+      paymentStatus: initialPaymentStatus,
+      paymentReceipt: cleanReceipt,
+      transactionRef: cleanTransactionRef,
+      status: initialStatus,
       date: new Date().toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" }),
-      city,
-      address,
-      province
+      city: cleanCity,
+      address: cleanAddress,
+      province: cleanProvince,
+      cart: Array.isArray(cart) ? cart : []
     });
 
     await newOrder.save();
 
-    // Deduct stock for each cart item
-    if (Array.isArray(cart)) {
+    // Deduct stock and increment bottlesSold for each ordered fragrance directly in MongoDB
+    if (Array.isArray(cart) && cart.length > 0) {
       for (const item of cart) {
-        const product = await Product.findOne({ id: item.productId });
+        const qty = Number(item.quantity) || 1;
+        const searchConditions = [];
+        if (item.productId) searchConditions.push({ id: item.productId });
+        if (item.id) searchConditions.push({ id: item.id });
+        if (item.slug) searchConditions.push({ slug: item.slug });
+        if (item.name) {
+          searchConditions.push({ name: item.name });
+          searchConditions.push({ name: new RegExp(`^${item.name}$`, "i") });
+        }
+        const product = await Product.findOne(searchConditions.length > 0 ? { $or: searchConditions } : { id: item.productId });
         if (product) {
           if (item.size === "50ml") {
-            product.stock50ml = Math.max(0, product.stock50ml - item.quantity);
+            product.stock50ml = Math.max(0, product.stock50ml - qty);
           } else {
-            product.stock100ml = Math.max(0, product.stock100ml - item.quantity);
+            product.stock100ml = Math.max(0, product.stock100ml - qty);
           }
+          product.bottlesSold = (Number(product.bottlesSold) || 0) + qty;
+          await product.save();
+        }
+      }
+    } else if (items) {
+      // Fallback if raw text items placed: parse and update bottlesSold in MongoDB
+      const raw = String(items || "");
+      const segments = raw.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean);
+      const allDbProds = await Product.find({});
+      for (const seg of segments) {
+        const normSeg = normalizeCatalogText(seg);
+        const product = allDbProds.find((p) => normSeg.includes(normalizeCatalogText(p.name)));
+        if (product) {
+          let qty = 1;
+          const qtyMatch = seg.match(/[×xX*]\s*(\d+)/) || seg.match(/(\d+)\s*[×xX*]/);
+          if (qtyMatch) qty = parseInt(qtyMatch[1], 10) || 1;
+
+          const is50ml = /50\s*ml/i.test(seg);
+          if (is50ml) {
+            product.stock50ml = Math.max(0, product.stock50ml - qty);
+          } else {
+            product.stock100ml = Math.max(0, product.stock100ml - qty);
+          }
+          product.bottlesSold = (Number(product.bottlesSold) || 0) + qty;
           await product.save();
         }
       }
     }
+
     // Create admin notification
     try {
       await Notification.create({
-        title: "New Order Placed",
-        message: `Order #${trackingId} for Rs. ${amount.toLocaleString()} was placed by ${customer}.`,
+        title: isBankTransfer ? "Bank Transfer Order - Verify Payment" : "New Order Placed",
+        message: isBankTransfer
+          ? `Order #${trackingId} for Rs. ${amount.toLocaleString()} was placed by ${cleanCustomer}. Payment receipt uploaded and awaiting verification.`
+          : `Order #${trackingId} for Rs. ${amount.toLocaleString()} was placed by ${cleanCustomer}.`,
         type: "order",
         link: "/admin/orders"
       });
@@ -461,25 +657,90 @@ router.post("/orders", requireAuth, async (req, res) => {
       console.error("Failed to create admin notification:", notifErr);
     }
 
-    res.status(201).json({ success: true, orderId: trackingId });
+    // Send acknowledgment email to customer
+    if (isBankTransfer) {
+      try {
+        await sendOrderReceivedPendingEmail(newOrder);
+      } catch (mailErr) {
+        console.error("Failed to send order pending email:", mailErr);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      orderId: trackingId,
+      status: initialStatus,
+      order: {
+        id: trackingId,
+        date: newOrder.date,
+        amount: newOrder.amount,
+        status: newOrder.status,
+        items: newOrder.items,
+        payment: newOrder.payment,
+        city: newOrder.city,
+        createdAt: newOrder.createdAt
+      }
+    });
   } catch (err) {
+    console.error("Failed to place order:", err);
     res.status(500).json({ error: "Failed to place order." });
   }
 });
 
 // GET: List all orders (Admins get all, regular clients get their own)
-router.get("/orders", requireAuth, async (req, res) => {
+router.get("/orders", optionalAuth, async (req, res) => {
   try {
     let query = {};
-    if (req.user.role !== "admin" && req.user.role !== "superadmin") {
-      // Enforce client boundaries: retrieve orders matching user id or user email
-      query = {
-        $or: [
-          { userId: req.user.id },
-          { email: req.user.email.toLowerCase().trim() }
-        ]
-      };
+    if (req.user && (req.user.role === "admin" || req.user.role === "superadmin")) {
+      // Admin / SuperAdmin can see all orders
+      query = {};
+    } else {
+      // Regular customer orders lookup: by authenticated user or query email
+      const candidateEmails = new Set();
+      const candidateUserIds = new Set();
+      let customerName = "";
+
+      if (req.user) {
+        candidateUserIds.add(String(req.user.id));
+        if (req.user.email) candidateEmails.add(req.user.email.toLowerCase().trim());
+        if (req.user.name) customerName = req.user.name.trim();
+
+        const userRecord = await User.findById(req.user.id).lean();
+        if (userRecord) {
+          if (userRecord.email) candidateEmails.add(userRecord.email.toLowerCase().trim());
+          if (userRecord.name) customerName = userRecord.name.trim();
+        }
+      }
+
+      if (req.query.email) {
+        const qEmail = String(req.query.email).toLowerCase().trim();
+        candidateEmails.add(qEmail);
+        const matchedUser = await User.findOne({ email: qEmail }).lean();
+        if (matchedUser) {
+          candidateUserIds.add(String(matchedUser._id));
+          if (matchedUser.name && !customerName) customerName = matchedUser.name.trim();
+        }
+      }
+
+      if (candidateEmails.size === 0 && candidateUserIds.size === 0) {
+        return res.status(401).json({ error: "Authentication or email required to view orders." });
+      }
+
+      const orList = [];
+      for (const uid of candidateUserIds) {
+        orList.push({ userId: uid });
+      }
+      for (const em of candidateEmails) {
+        orList.push({ email: em });
+        orList.push({ email: new RegExp(`^${em}$`, "i") });
+      }
+      if (customerName && customerName.length >= 3) {
+        orList.push({ customer: new RegExp(`^${customerName}`, "i") });
+      }
+
+      query = { $or: orList };
     }
+
     const list = await Order.find(query).sort({ createdAt: -1 });
     res.json(list);
   } catch (err) {
@@ -489,12 +750,44 @@ router.get("/orders", requireAuth, async (req, res) => {
 
 // PUT: Update order status (Admin/Super Admin only)
 router.put("/orders/:id/status", requireAuth, requireAdmin, async (req, res) => {
-  const { status } = req.body;
+  const { status, paymentStatus, rejectionReason } = req.body;
   try {
-    const updated = await Order.findOneAndUpdate({ id: req.params.id }, { status }, { new: true });
-    if (!updated) return res.status(404).json({ error: "Order not found." });
+    const existingOrder = await Order.findOne({ id: req.params.id });
+    if (!existingOrder) return res.status(404).json({ error: "Order not found." });
+
+    const updates = {};
+    if (status) updates.status = status;
+    if (paymentStatus) updates.paymentStatus = paymentStatus;
+    if (rejectionReason) updates.rejectionReason = rejectionReason;
+
+    // Automatic payment reconciliation on approval
+    const isNowConfirmed = status === "Confirmed" && existingOrder.status !== "Confirmed";
+    if (isNowConfirmed) {
+      updates.paymentStatus = "Paid";
+      updates.verifiedBy = req.user.email || req.user.id;
+      updates.verifiedAt = new Date();
+    } else if (status === "Cancelled") {
+      updates.paymentStatus = "Failed";
+    }
+
+    const updated = await Order.findOneAndUpdate(
+      { id: req.params.id },
+      { $set: updates },
+      { new: true }
+    );
+
+    // If order confirmed, trigger customer email with luxury template
+    if (isNowConfirmed) {
+      try {
+        await sendOrderConfirmationEmail(updated);
+      } catch (mailErr) {
+        console.error("Failed to send order confirmation email:", mailErr);
+      }
+    }
+
     res.json(updated);
   } catch (err) {
+    console.error("Failed to update order status:", err);
     res.status(500).json({ error: "Failed to update order status." });
   }
 });
@@ -523,6 +816,12 @@ router.get("/orders/track/:orderId", async (req, res) => {
 
     // Build tracking steps dynamically
     const status = matchedOrder.status;
+
+    const isConfirmedDone = !["Pending", "Pending Verification", "Cancelled", "Refunded"].includes(status);
+    const isPackedDone = ["Packed", "Processing", "Shipped", "Out for Delivery", "Delivered"].includes(status);
+    const isDispatchedDone = ["Shipped", "Out for Delivery", "Delivered"].includes(status);
+    const isDeliveredDone = status === "Delivered";
+
     const steps = [
       {
         label: "Order Received",
@@ -532,29 +831,47 @@ router.get("/orders/track/:orderId", async (req, res) => {
       },
       {
         label: "Order Confirmed",
-        desc: "Payment verified. Preparing your fragrance collection for packaging.",
-        date: ["Pending"].includes(status) ? "Pending" : matchedOrder.date,
-        done: !["Pending", "Cancelled", "Refunded"].includes(status),
+        desc: status === "Pending Verification"
+          ? "Payment receipt received. Verification in progress by finance team."
+          : "Payment verified. Preparing your fragrance collection for packaging.",
+        date: ["Pending", "Pending Verification"].includes(status) ? "Pending" : matchedOrder.date,
+        done: isConfirmedDone,
+      },
+      {
+        label: "Packed",
+        desc: status === "Packed"
+          ? "Your bespoke fragrance has been carefully inspected, packaged, and sealed for dispatch."
+          : "Fragrance bottle inspected, sealed, and packaged securely.",
+        date: isPackedDone ? matchedOrder.date : "Pending",
+        done: isPackedDone,
       },
       {
         label: "Dispatched",
         desc: "Handed over to Trax Logistics courier partner.",
-        date: ["Pending", "Confirmed", "Processing", "Packed"].includes(status) ? "Pending" : matchedOrder.date,
-        done: ["Shipped", "Out for Delivery", "Delivered"].includes(status),
+        date: isDispatchedDone ? matchedOrder.date : "Pending",
+        done: isDispatchedDone,
       },
       {
         label: "Delivered",
         desc: "Parcel delivered to your doorstep.",
-        date: status === "Delivered" ? matchedOrder.date : "Pending",
-        done: status === "Delivered",
+        date: isDeliveredDone ? matchedOrder.date : "Pending",
+        done: isDeliveredDone,
       },
     ];
 
     res.json({
       id: matchedOrder.id,
       status: matchedOrder.status,
+      paymentStatus: matchedOrder.paymentStatus || (matchedOrder.status === "Confirmed" ? "Paid" : "Pending"),
+      payment: matchedOrder.payment,
+      transactionRef: matchedOrder.transactionRef || "",
       carrier: "Trax Logistics",
       estimatedDelivery: matchedOrder.status === "Delivered" ? "Delivered" : "2-3 Working Days",
+      items: matchedOrder.items,
+      amount: matchedOrder.amount,
+      city: matchedOrder.city,
+      customer: matchedOrder.customer,
+      date: matchedOrder.date,
       steps
     });
   } catch (err) {
@@ -569,25 +886,276 @@ router.get("/orders/track/:orderId", async (req, res) => {
 // GET: Config parameter value by key
 router.get("/config/:key", async (req, res) => {
   try {
-    const cfg = await Config.findOne({ key: req.params.key });
-    res.json(cfg ? cfg.value : null);
+    const { key } = req.params;
+    const sensitiveKeys = ["smtp_pass", "smtp_user"];
+
+    if (sensitiveKeys.includes(key)) {
+      return requireAuth(req, res, async () => {
+        if (!req.user || req.user.role !== "superadmin") {
+          return res.status(403).json({ error: "Access denied. Super Admin privileges required." });
+        }
+        const config = await Config.findOne({ key });
+        if (config) return res.json(config.value);
+
+        let fallback = "";
+        if (key === "smtp_user") fallback = process.env.SMTP_USER || "sohofragrance1@gmail.com";
+        if (key === "smtp_pass") fallback = process.env.SMTP_PASS || "rmbfjupdjtwxyihl";
+        if (typeof fallback === "string" && fallback.startsWith('"') && fallback.endsWith('"')) {
+          fallback = fallback.substring(1, fallback.length - 1);
+        }
+        return res.json(fallback);
+      });
+    }
+
+    const config = await Config.findOne({ key });
+    if (config) return res.json(config.value);
+
+    // Fallback defaults for store configs
+    let fallback = null;
+    if (key === "store_name") fallback = process.env.SMTP_FROM_NAME || "SOHO Fragrance";
+    else if (key === "currency") fallback = "PKR (₨)";
+    else if (key === "support_email") fallback = "support@sohofragrance.com";
+    else if (key === "smtp_from_name") fallback = process.env.SMTP_FROM_NAME || "SOHO Fragrance";
+    else if (key === "payment_accounts") {
+      fallback = {
+        bank: {
+          bankName: "Meezan Bank Ltd.",
+          accountTitle: "SOHO Fragrance Pvt Ltd",
+          accountNumber: "0102-0106123456",
+          iban: "PK42MEZN0001020106123456",
+          branchCode: "0102",
+          branchName: "Zamzama Branch, Karachi",
+          instructions: "Please transfer the exact order amount via online banking / ATM transfer and upload the payment receipt below."
+        },
+        jazzcash: {
+          accountTitle: "SOHO Fragrance Pvt Ltd",
+          accountNumber: "0300-1234567",
+          tillId: "",
+          instructions: "Send money via JazzCash App or dial *786# to this mobile account. Upload transaction receipt below."
+        },
+        easypaisa: {
+          accountTitle: "SOHO Fragrance Pvt Ltd",
+          accountNumber: "0345-1234567",
+          tillId: "",
+          instructions: "Send money via Easypaisa App or dial *786# to this mobile account. Upload transaction receipt below."
+        },
+        nayapay: {
+          accountTitle: "SOHO Fragrance Pvt Ltd",
+          accountNumber: "0300-1234567",
+          nayapayId: "",
+          instructions: "Transfer via NayaPay app to our registered mobile account and upload transaction receipt."
+        },
+        sadapay: {
+          accountTitle: "SOHO Fragrance Pvt Ltd",
+          accountNumber: "0300-1234567",
+          iban: "PK55SADA0000001234567890",
+          instructions: "Transfer via SadaPay app or send to our SadaBiz IBAN and upload payment confirmation."
+        },
+        raast: {
+          accountTitle: "SOHO Fragrance Pvt Ltd",
+          raastId: "0300-1234567",
+          linkedBank: "Meezan Bank Ltd.",
+          instructions: "Instant zero-fee transfer via Raast ID. Attach payment receipt below."
+        }
+      };
+    }
+    else if (key === "bank_details") {
+      fallback = {
+        bankName: "Meezan Bank Ltd.",
+        accountTitle: "SOHO Fragrance Pvt Ltd",
+        accountNumber: "0102-0106123456",
+        iban: "PK42MEZN0001020106123456",
+        branchCode: "0102",
+        branchName: "Zamzama Branch, Karachi",
+        raastId: "0300-1234567",
+        walletDetails: "JazzCash / EasyPaisa: 0300-1234567",
+        instructions: "Please transfer the exact order amount and upload the screenshot / receipt below with transaction reference."
+      };
+    }
+
+    if (typeof fallback === "string" && fallback.startsWith('"') && fallback.endsWith('"')) {
+      fallback = fallback.substring(1, fallback.length - 1);
+    }
+    res.json(fallback);
   } catch (err) {
-    res.status(500).json({ error: "Failed to read configuration." });
+    res.status(500).json({ error: "Failed to load configuration." });
   }
 });
 
-// PUT: Save Config parameter value by key (Admin/Super Admin only)
+// PUT: Create or update configuration parameter by key
 router.put("/config/:key", requireAuth, requireAdmin, async (req, res) => {
-  const { value } = req.body;
   try {
-    const updated = await Config.findOneAndUpdate(
-      { key: req.params.key },
-      { value },
+    const { key } = req.params;
+    if (["smtp_pass", "smtp_user"].includes(key) && req.user.role !== "superadmin") {
+      return res.status(403).json({ error: "Access denied. Super Admin privileges required." });
+    }
+
+    const config = await Config.findOneAndUpdate(
+      { key },
+      { value: req.body.value },
       { new: true, upsert: true }
     );
-    res.json(updated.value);
+
+    // If saving payment_accounts, automatically sync bank_details for backward compatibility
+    if (key === "payment_accounts" && req.body.value && req.body.value.bank) {
+      await Config.findOneAndUpdate(
+        { key: "bank_details" },
+        { value: req.body.value.bank },
+        { new: true, upsert: true }
+      );
+    }
+
+    res.json({ success: true, message: "Configuration saved successfully.", value: config.value, config });
   } catch (err) {
     res.status(500).json({ error: "Failed to save configuration." });
+  }
+});
+
+// Default baseline sales offsets distributed across the 12 signature fragrances (Sum = 3,000 bottles)
+const DEFAULT_PRODUCT_SALES_OFFSETS = {
+  "01": 380, // VELORÉN
+  "12": 350, // SOVÉRANE
+  "02": 340, // NOIRVÉA
+  "07": 290, // ÉLVARO NOIR
+  "03": 270, // AURÉVON
+  "04": 260, // OMBRÉLIS
+  "06": 240, // RAVÉLIEN
+  "10": 220, // VÉNDRIS
+  "05": 200, // SÉLVARO
+  "08": 170, // CALVÉRÉ
+  "11": 150, // ALVÉRION
+  "09": 130  // ORVÉSSA
+};
+
+// GET: Live Brand Stats & Social Proof Metrics (Public - Accessible by all users & store visitors)
+router.get("/brand-stats", async (req, res) => {
+  try {
+    const cfgDoc = await Config.findOne({ key: "brand_stats" });
+    const cfg = cfgDoc ? cfgDoc.value : {
+      baseCustomers: 1000,
+      baseRepeatCustomers: 700,
+      baseBottlesSold: 3000,
+      productOffsets: DEFAULT_PRODUCT_SALES_OFFSETS
+    };
+
+    const userEmails = await User.find({ role: "user" }).distinct("email");
+    const orderEmails = await Order.find({ status: { $nin: ["Cancelled", "Refunded"] } }).distinct("email");
+    const allCustomerEmails = new Set([
+      ...userEmails.map((e) => String(e || "").toLowerCase().trim()),
+      ...orderEmails.map((e) => String(e || "").toLowerCase().trim())
+    ]);
+    const liveCustomers = allCustomerEmails.size;
+
+    const repeatCustomersAggregate = await Order.aggregate([
+      { $match: { status: { $nin: ["Cancelled", "Refunded"] } } },
+      { $group: { _id: { $toLower: "$email" }, count: { $sum: 1 } } },
+      { $match: { count: { $gte: 2 } } }
+    ]);
+    const liveRepeatCustomers = repeatCustomersAggregate.length;
+
+    const orders = await Order.find({ status: { $nin: ["Cancelled", "Refunded"] } }).lean();
+    const products = await Product.find({}).lean();
+    const catalogList = products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      normName: normalizeCatalogText(p.name)
+    }));
+
+    let liveBottlesSold = 0;
+    const liveBottlesPerProduct = {};
+
+    for (const order of orders) {
+      const items = parseOrderItemsForAnalytics(order, catalogList);
+      for (const item of items) {
+        const matched = catalogList.find((p) => p.name === item.name || normalizeCatalogText(p.name) === normalizeCatalogText(item.name));
+        const prodId = matched ? matched.id : item.name;
+        liveBottlesSold += item.quantity;
+        liveBottlesPerProduct[prodId] = (liveBottlesPerProduct[prodId] || 0) + item.quantity;
+      }
+    }
+
+    const baseCustomers = Number(cfg.baseCustomers ?? 1000);
+    const baseRepeatCustomers = Number(cfg.baseRepeatCustomers ?? 700);
+    const baseBottlesSold = Number(cfg.baseBottlesSold ?? 3000);
+
+    const totalCustomers = baseCustomers + liveCustomers;
+    const repeatCustomers = baseRepeatCustomers + liveRepeatCustomers;
+
+    const productSales = {};
+    const productSalesById = {};
+    const currentOffsets = cfg.productOffsets || DEFAULT_PRODUCT_SALES_OFFSETS;
+
+    let dbBottlesSum = 0;
+    for (const p of products) {
+      const sold = Number(p.bottlesSold) || (Number(currentOffsets[p.id] ?? currentOffsets[p.name]) || 250);
+      productSales[p.name] = sold;
+      productSalesById[p.id] = sold;
+      dbBottlesSum += sold;
+    }
+
+    const totalBottlesSold = dbBottlesSum > 0 ? dbBottlesSum : (baseBottlesSold + liveBottlesSold);
+
+    res.json({
+      baseCustomers,
+      baseRepeatCustomers,
+      baseBottlesSold,
+      liveCustomers,
+      liveRepeatCustomers,
+      liveBottlesSold,
+      totalCustomers,
+      repeatCustomers,
+      totalBottlesSold,
+      repeatRate: `${Math.round((repeatCustomers / Math.max(1, totalCustomers)) * 100)}%`,
+      productSales,
+      productSalesById,
+      productOffsets: currentOffsets
+    });
+  } catch (err) {
+    console.error("Failed to compute live brand stats:", err);
+    res.status(500).json({ error: "Failed to compute brand stats." });
+  }
+});
+
+// PUT: Update Baseline Brand Stats (Admin & Super Admin only)
+router.put("/admin/brand-stats", requireAuth, requireAdmin, async (req, res) => {
+  const { baseCustomers, baseRepeatCustomers, baseBottlesSold, productOffsets } = req.body;
+  try {
+    const existingDoc = await Config.findOne({ key: "brand_stats" });
+    const existing = existingDoc?.value || {
+      baseCustomers: 1000,
+      baseRepeatCustomers: 700,
+      baseBottlesSold: 3000,
+      productOffsets: DEFAULT_PRODUCT_SALES_OFFSETS
+    };
+
+    const newConfig = {
+      baseCustomers: baseCustomers !== undefined ? Number(baseCustomers) : existing.baseCustomers,
+      baseRepeatCustomers: baseRepeatCustomers !== undefined ? Number(baseRepeatCustomers) : existing.baseRepeatCustomers,
+      baseBottlesSold: baseBottlesSold !== undefined ? Number(baseBottlesSold) : existing.baseBottlesSold,
+      productOffsets: productOffsets && typeof productOffsets === "object" ? productOffsets : existing.productOffsets
+    };
+
+    // Update Config collection
+    const updated = await Config.findOneAndUpdate(
+      { key: "brand_stats" },
+      { key: "brand_stats", value: newConfig },
+      { new: true, upsert: true }
+    );
+
+    // Update bottlesSold in MongoDB products collection
+    if (newConfig.productOffsets && typeof newConfig.productOffsets === "object") {
+      for (const [key, val] of Object.entries(newConfig.productOffsets)) {
+        await Product.updateOne(
+          { $or: [{ id: key }, { name: key }] },
+          { $set: { bottlesSold: Number(val) } }
+        );
+      }
+    }
+
+    res.json({ success: true, message: "Brand statistics updated successfully in database.", config: updated.value });
+  } catch (err) {
+    console.error("Failed to update brand stats:", err);
+    res.status(500).json({ error: "Failed to save brand stats." });
   }
 });
 
@@ -641,65 +1209,6 @@ router.post("/contact", async (req, res) => {
   }
 });
 
-// GET: Get configuration parameter by key
-router.get("/config/:key", async (req, res) => {
-  try {
-    const { key } = req.params;
-    const sensitiveKeys = ["smtp_pass", "smtp_user"];
-
-    if (sensitiveKeys.includes(key)) {
-      // Enforce auth check dynamically for sensitive configurations
-      return requireAuth(req, res, async () => {
-        if (!req.user || req.user.role !== "superadmin") {
-          return res.status(403).json({ error: "Access denied. Super Admin privileges required." });
-        }
-        const config = await Config.findOne({ key });
-        if (config) return res.json(config.value);
-
-        // Fallback to environment variables if not saved in DB yet
-        let fallback = "";
-        if (key === "smtp_user") fallback = process.env.SMTP_USER || "sohofragrance1@gmail.com";
-        if (key === "smtp_pass") fallback = process.env.SMTP_PASS || "rmbfjupdjtwxyihl";
-        
-        if (typeof fallback === "string" && fallback.startsWith('"') && fallback.endsWith('"')) {
-          fallback = fallback.substring(1, fallback.length - 1);
-        }
-        return res.json(fallback);
-      });
-    }
-
-    const config = await Config.findOne({ key });
-    if (config) return res.json(config.value);
-
-    // Fallback to environment variables or defaults
-    let fallback = "";
-    if (key === "store_name") fallback = process.env.SMTP_FROM_NAME || "SOHO Fragrance";
-    if (key === "currency") fallback = "PKR (₨)";
-    if (key === "support_email") fallback = "support@sohofragrance.com";
-    if (key === "smtp_from_name") fallback = process.env.SMTP_FROM_NAME || "SOHO Fragrance";
-
-    if (typeof fallback === "string" && fallback.startsWith('"') && fallback.endsWith('"')) {
-      fallback = fallback.substring(1, fallback.length - 1);
-    }
-    res.json(fallback);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to load configuration." });
-  }
-});
-
-// PUT: Create or update configuration parameter by key
-router.put("/config/:key", requireAuth, requireSuperAdmin, async (req, res) => {
-  try {
-    const config = await Config.findOneAndUpdate(
-      { key: req.params.key },
-      { value: req.body.value },
-      { new: true, upsert: true }
-    );
-    res.json({ success: true, message: "Configuration saved successfully.", config });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to save configuration." });
-  }
-});
 
 // GET: Get active .env configurations (for Super Admin settings page view)
 router.get("/config-env/info", requireAuth, requireSuperAdmin, async (req, res) => {
@@ -1145,6 +1654,98 @@ router.get("/admin/customers/:id/orders", requireAuth, requireAdmin, async (req,
   }
 });
 
+// GET: Repeat Customers Analytics & Full Details (Admin & Super Admin)
+router.get("/admin/repeat-customers", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const allOrders = await Order.find({}).sort({ createdAt: -1 });
+
+    const normKey = (o) => {
+      const p = (o.phone || "").replace(/\D/g, "").slice(-10);
+      if (p.length >= 10) return "phone:" + p;
+      if (o.email && o.email.trim()) return "email:" + o.email.trim().toLowerCase();
+      return "name:" + (o.customer || "").trim().toLowerCase();
+    };
+
+    const customerMap = {};
+    const orderCustomerKeyMap = {};
+
+    for (const ord of allOrders) {
+      const key = normKey(ord);
+      orderCustomerKeyMap[ord.id] = key;
+
+      if (!customerMap[key]) {
+        customerMap[key] = {
+          key,
+          customer: ord.customer,
+          phone: ord.phone || "—",
+          email: ord.email || "—",
+          city: ord.city || "—",
+          address: ord.address || "—",
+          ordersCount: 0,
+          totalSpent: 0,
+          firstOrderDate: ord.date,
+          lastOrderDate: ord.date,
+          orders: []
+        };
+      }
+
+      customerMap[key].ordersCount += 1;
+      customerMap[key].totalSpent += Number(ord.amount || 0);
+      customerMap[key].orders.push({
+        id: ord.id,
+        date: ord.date,
+        status: ord.status,
+        amount: ord.amount,
+        items: ord.items,
+        payment: ord.payment
+      });
+      customerMap[key].firstOrderDate = ord.date;
+    }
+
+    const customerList = Object.values(customerMap);
+    const repeatCustomers = customerList
+      .filter(c => c.ordersCount > 1)
+      .sort((a, b) => b.ordersCount - a.ordersCount || b.totalSpent - a.totalSpent);
+
+    const totalOrders = allOrders.length;
+    const uniqueCustomers = customerList.length;
+    const repeatCustomersCount = repeatCustomers.length;
+    const repeatOrdersCount = repeatCustomers.reduce((sum, c) => sum + c.ordersCount, 0);
+    const repeatRevenue = repeatCustomers.reduce((sum, c) => sum + c.totalSpent, 0);
+    const repeatRate = uniqueCustomers > 0 ? Math.round((repeatCustomersCount / uniqueCustomers) * 100) : 0;
+
+    // Fast lookup map for orders
+    const orderRepeatStatus = {};
+    for (const ord of allOrders) {
+      const key = orderCustomerKeyMap[ord.id];
+      const customerData = customerMap[key];
+      const count = customerData ? customerData.ordersCount : 1;
+      orderRepeatStatus[ord.id] = {
+        isRepeat: count > 1,
+        ordersCount: count,
+        customerTotalSpent: customerData ? customerData.totalSpent : ord.amount,
+        customerKey: key
+      };
+    }
+
+    res.json({
+      summary: {
+        totalOrders,
+        uniqueCustomers,
+        repeatCustomersCount,
+        repeatOrdersCount,
+        repeatRevenue,
+        repeatRate
+      },
+      repeatCustomers,
+      orderRepeatStatus
+    });
+  } catch (err) {
+    console.error("Failed to fetch repeat customers analysis:", err);
+    res.status(500).json({ error: "Failed to fetch repeat customers analysis." });
+  }
+});
+
 // GET: Dynamic dashboard statistics
 router.get("/admin/dashboard/statistics", requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -1214,6 +1815,23 @@ router.get("/admin/dashboard/statistics", requireAuth, requireAdmin, async (req,
     });
     const completedOrders = await Order.countDocuments({ status: "Delivered" });
 
+    // Repeat customers metrics across all orders
+    const allOrdersList = await Order.find({});
+    const custMap = {};
+    for (const ord of allOrdersList) {
+      const p = (ord.phone || "").replace(/\D/g, "").slice(-10);
+      const k = p.length >= 10 ? "phone:" + p : (ord.email && ord.email.trim() ? "email:" + ord.email.trim().toLowerCase() : "name:" + (ord.customer || "").trim().toLowerCase());
+      if (!custMap[k]) custMap[k] = { count: 0, spent: 0 };
+      custMap[k].count += 1;
+      custMap[k].spent += Number(ord.amount || 0);
+    }
+    const allCustValues = Object.values(custMap);
+    const repeatCusts = allCustValues.filter(c => c.count > 1);
+    const repeatCustomersCount = repeatCusts.length;
+    const repeatOrdersCount = repeatCusts.reduce((sum, c) => sum + c.count, 0);
+    const repeatRevenue = repeatCusts.reduce((sum, c) => sum + c.spent, 0);
+    const repeatRate = allCustValues.length > 0 ? Math.round((repeatCustomersCount / allCustValues.length) * 100) : 0;
+
     res.json({
       totalUsers,
       totalCustomers,
@@ -1221,7 +1839,11 @@ router.get("/admin/dashboard/statistics", requireAuth, requireAdmin, async (req,
       newCustomersToday,
       ordersToday,
       activeOrders,
-      completedOrders
+      completedOrders,
+      repeatCustomersCount,
+      repeatOrdersCount,
+      repeatRevenue,
+      repeatRate
     });
   } catch (err) {
     console.error("Failed to load dashboard statistics:", err);
@@ -1406,45 +2028,184 @@ router.delete("/admin/notifications", requireAuth, requireAdmin, async (req, res
   }
 });
 
-// GET: Analytics Statistics (Admin/Super Admin only)
+// Helper: Normalize perfume/text string for robust matching across diacritics & casing
+const normalizeCatalogText = (str) => {
+  return String(str || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .trim();
+};
+
+// Helper: Parse order items whether stored as structured cart array, JSON string, or formatted text summary
+const parseOrderItemsForAnalytics = (order, catalogList) => {
+  const parsed = [];
+
+  // 1. If order has cart array with items
+  if (Array.isArray(order.cart) && order.cart.length > 0) {
+    for (const item of order.cart) {
+      const norm = normalizeCatalogText(item.name);
+      const matched = catalogList.find((p) => p.normName === norm || norm.includes(p.normName) || p.normName.includes(norm));
+      parsed.push({
+        name: matched ? matched.name : (item.name || "Perfume"),
+        quantity: Number(item.quantity) || 1,
+        price: Number(item.price) || (item.size === "50ml" ? (matched?.price50ml || 4500) : (matched?.price100ml || 7500)),
+        gender: (matched?.gender || item.gender || "unisex").toLowerCase()
+      });
+    }
+    return parsed;
+  }
+
+  // 2. If order.items is an array of objects
+  if (Array.isArray(order.items)) {
+    for (const item of order.items) {
+      if (typeof item === "object" && item !== null) {
+        const norm = normalizeCatalogText(item.name);
+        const matched = catalogList.find((p) => p.normName === norm || norm.includes(p.normName) || p.normName.includes(norm));
+        parsed.push({
+          name: matched ? matched.name : (item.name || "Perfume"),
+          quantity: Number(item.quantity) || 1,
+          price: Number(item.price) || (item.size === "50ml" ? (matched?.price50ml || 4500) : (matched?.price100ml || 7500)),
+          gender: (matched?.gender || "unisex").toLowerCase()
+        });
+      }
+    }
+    if (parsed.length > 0) return parsed;
+  }
+
+  // 3. If raw items string is JSON
+  const rawStr = String(order.items || "").trim();
+  if (rawStr.startsWith("[") && rawStr.endsWith("]")) {
+    try {
+      const arr = JSON.parse(rawStr);
+      if (Array.isArray(arr)) {
+        for (const item of arr) {
+          const norm = normalizeCatalogText(item.name);
+          const matched = catalogList.find((p) => p.normName === norm || norm.includes(p.normName) || p.normName.includes(norm));
+          parsed.push({
+            name: matched ? matched.name : (item.name || "Perfume"),
+            quantity: Number(item.quantity) || 1,
+            price: Number(item.price) || (matched?.price100ml || 7500),
+            gender: (matched?.gender || "unisex").toLowerCase()
+          });
+        }
+        if (parsed.length > 0) return parsed;
+      }
+    } catch (_) {}
+  }
+
+  // 4. Standard string format e.g. "NOIRVÉA 50ml × 2, SOVÉRANE 100ml × 1"
+  const segments = rawStr.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean);
+  for (const seg of segments) {
+    const normSeg = normalizeCatalogText(seg);
+    let matchedProd = catalogList.find((p) => normSeg.includes(p.normName));
+
+    // Extract quantity e.g. "× 2", "x 2", "X2", "* 2", "2 x"
+    let qty = 1;
+    const qtyMatch = seg.match(/[×xX*]\s*(\d+)/) || seg.match(/(\d+)\s*[×xX*]/);
+    if (qtyMatch) {
+      qty = parseInt(qtyMatch[1], 10) || 1;
+    }
+
+    // Determine size & price
+    const is50ml = /50\s*ml/i.test(seg);
+    let price = 0;
+    if (matchedProd) {
+      price = is50ml ? (matchedProd.price50ml || 4500) : (matchedProd.price100ml || 7500);
+    } else {
+      let cleanName = seg
+        .replace(/[×xX*]\s*\d+|\d+\s*[×xX*]/g, "")
+        .replace(/50\s*ml|100\s*ml/gi, "")
+        .trim();
+      matchedProd = { name: cleanName || "SOHO Fragrance", gender: "unisex" };
+      price = Math.round((order.amount || 5000) / Math.max(1, segments.length * qty));
+    }
+
+    parsed.push({
+      name: matchedProd.name,
+      quantity: qty,
+      price: price,
+      gender: (matchedProd.gender || "unisex").toLowerCase()
+    });
+  }
+
+  return parsed;
+};
+
+// Helper: safely resolve order date as valid Date object
+const getOrderDate = (o) => {
+  if (o.createdAt) {
+    const d = new Date(o.createdAt);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (o.date) {
+    const d = new Date(o.date);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return new Date();
+};
+
+// GET: Analytics Statistics (Admin/Super Admin only - 100% Dynamic & Real-time)
 router.get("/admin/analytics", requireAuth, requireAdmin, async (req, res) => {
   const { range } = req.query;
   const targetRange = range || "30days";
 
   try {
     const now = new Date();
-    let startDate = new Date();
-    let compStartDate = new Date();
-    let compEndDate = new Date();
+    // End of today so any orders placed right now are fully included
+    const activeEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    let activeStart = new Date();
+    let compStart = new Date();
+    let compEnd = new Date();
 
-    // Determine Date Boundaries
     if (targetRange === "7days") {
-      startDate.setDate(now.getDate() - 7);
-      compStartDate.setDate(now.getDate() - 14);
-      compEndDate.setDate(now.getDate() - 7);
+      activeStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      activeStart.setHours(0, 0, 0, 0);
+      compStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+      compStart.setHours(0, 0, 0, 0);
+      compEnd = new Date(activeStart.getTime() - 1);
     } else if (targetRange === "12months") {
-      startDate.setMonth(now.getMonth() - 12);
-      compStartDate.setMonth(now.getMonth() - 24);
-      compEndDate.setMonth(now.getMonth() - 12);
+      activeStart = new Date(now);
+      activeStart.setMonth(now.getMonth() - 12);
+      activeStart.setHours(0, 0, 0, 0);
+      compStart = new Date(now);
+      compStart.setMonth(now.getMonth() - 24);
+      compStart.setHours(0, 0, 0, 0);
+      compEnd = new Date(activeStart.getTime() - 1);
     } else {
       // Default: 30 days
-      startDate.setDate(now.getDate() - 30);
-      compStartDate.setDate(now.getDate() - 60);
-      compEndDate.setDate(now.getDate() - 30);
+      activeStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      activeStart.setHours(0, 0, 0, 0);
+      compStart = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+      compStart.setHours(0, 0, 0, 0);
+      compEnd = new Date(activeStart.getTime() - 1);
     }
 
-    const SUCCESSFUL_STATUSES = ["Confirmed", "Processing", "Packed", "Shipped", "Out for Delivery", "Delivered"];
+    // Fetch all placed customer orders (All active statuses: Pending, Pending Verification, Confirmed, Packed, Shipped, Delivered)
+    const allValidOrders = await Order.find({
+      status: { $nin: ["Cancelled", "Refunded"] }
+    }).lean();
 
-    // Fetch orders in active range
-    const activeOrders = await Order.find({
-      status: { $in: SUCCESSFUL_STATUSES },
-      createdAt: { $gte: startDate, $lte: now }
+    // Fetch catalog products to accurately map names, sizes, pricing, and fragrance gender
+    const dbProducts = await Product.find({}).lean();
+    const catalogList = dbProducts.map((p) => ({
+      id: p.id,
+      name: p.name,
+      normName: normalizeCatalogText(p.name),
+      gender: (p.gender || "unisex").toLowerCase(),
+      price50ml: p.price50ml || 4500,
+      price100ml: p.price100ml || 7500
+    }));
+
+    // Filter orders in active range & comparison range
+    const activeOrders = allValidOrders.filter((o) => {
+      const d = getOrderDate(o);
+      return d >= activeStart && d <= activeEnd;
     });
 
-    // Fetch orders in comparison range
-    const compOrders = await Order.find({
-      status: { $in: SUCCESSFUL_STATUSES },
-      createdAt: { $gte: compStartDate, $lte: compEndDate }
+    const compOrders = allValidOrders.filter((o) => {
+      const d = getOrderDate(o);
+      return d >= compStart && d <= compEnd;
     });
 
     // Calculate Active Period Stats
@@ -1465,71 +2226,58 @@ router.get("/admin/analytics", requireAuth, requireAdmin, async (req, res) => {
       return `${prefix}${change.toFixed(1)}%`;
     };
 
-    // Calculate User count for Conversion Rate simulation
+    // Calculate Conversion Rate from user base and orders
     const totalUsers = await User.countDocuments({ role: "user" });
+    const baseline = Math.max(totalUsers * 2, totalOrders * 2, 20);
+    const conversionRate = totalOrders > 0 ? Math.min(100, (totalOrders / baseline) * 100) : 0;
+    const compConversionRate = compTotalOrders > 0 ? Math.min(100, (compTotalOrders / baseline) * 100) : 0;
+    const conversionRateStr = `${conversionRate.toFixed(1)}%`;
 
-    // Simulate Conversion Rate
-    const conversionRate = totalOrders > 0 ? ((totalOrders / Math.max(1, totalUsers * 1.8)) * 100) : 0;
-    const compConversionRate = compTotalOrders > 0 ? ((compTotalOrders / Math.max(1, totalUsers * 1.8)) * 100) : 0;
-
-    const conversionRateStr = `${Math.min(10, Math.max(0.5, conversionRate)).toFixed(1)}%`;
-    const compConversionRateStr = `${Math.min(10, Math.max(0.5, compConversionRate)).toFixed(1)}%`;
-
-    // Aggregate Best Performing Fragrances
+    // Aggregate Best Performing Fragrances & Demographics from real orders
     const fragranceSales = {};
+    let menCount = 0;
+    let womenCount = 0;
+    let unisexCount = 0;
+
     for (const order of activeOrders) {
-      if (Array.isArray(order.items)) {
-        for (const item of order.items) {
-          const key = item.name || item.productId;
-          if (!key) continue;
-          if (!fragranceSales[key]) {
-            fragranceSales[key] = { name: key, sales: 0, revenue: 0 };
-          }
-          fragranceSales[key].sales += item.quantity || 1;
-          fragranceSales[key].revenue += (item.price || 0) * (item.quantity || 1);
+      const items = parseOrderItemsForAnalytics(order, catalogList);
+      for (const item of items) {
+        if (!fragranceSales[item.name]) {
+          fragranceSales[item.name] = { name: item.name, sales: 0, revenue: 0 };
         }
+        fragranceSales[item.name].sales += item.quantity;
+        fragranceSales[item.name].revenue += item.price * item.quantity;
+
+        if (item.gender === "men") menCount += item.quantity;
+        else if (item.gender === "women") womenCount += item.quantity;
+        else unisexCount += item.quantity;
       }
     }
 
     const bestFragrances = Object.values(fragranceSales)
-      .sort((a, b) => b.sales - a.sales)
-      .slice(0, 3);
+      .sort((a, b) => (b.sales !== a.sales ? b.sales - a.sales : b.revenue - a.revenue))
+      .slice(0, 5);
 
-    // Default seeded fragrances if none sold yet
-    if (bestFragrances.length === 0) {
-      bestFragrances.push(
-        { name: "VELORÉN", sales: 18, revenue: 135000 },
-        { name: "SOVERANE", sales: 14, revenue: 63000 },
-        { name: "OUD INTELLECT", sales: 10, revenue: 75000 }
-      );
+    // If no sales yet in this period, provide top catalog preview
+    if (bestFragrances.length === 0 && catalogList.length > 0) {
+      catalogList.slice(0, 3).forEach((p) => {
+        bestFragrances.push({ name: p.name, sales: 0, revenue: 0 });
+      });
     }
 
-    // Aggregate Demographics
-    let unisexCount = 0;
-    let menCount = 0;
-    let womenCount = 0;
-
-    for (const order of activeOrders) {
-      if (Array.isArray(order.items)) {
-        for (const item of order.items) {
-          const qty = item.quantity || 1;
-          const nameLower = (item.name || "").toLowerCase();
-          if (nameLower.includes("velorén") || nameLower.includes("unisex") || nameLower.includes("intellect")) {
-            unisexCount += qty;
-          } else if (nameLower.includes("soverane") || nameLower.includes("men")) {
-            menCount += qty;
-          } else {
-            womenCount += qty;
-          }
-        }
-      }
+    const totalDemographics = menCount + womenCount + unisexCount;
+    let unisexPct = totalDemographics > 0 ? Math.round((unisexCount / totalDemographics) * 100) : 34;
+    let menPct = totalDemographics > 0 ? Math.round((menCount / totalDemographics) * 100) : 33;
+    let womenPct = totalDemographics > 0 ? Math.round((womenCount / totalDemographics) * 100) : 33;
+    if (totalDemographics > 0) {
+      const diff = 100 - (unisexPct + menPct + womenPct);
+      unisexPct += diff;
     }
 
-    const totalDemographics = unisexCount + menCount + womenCount;
     const demographics = [
-      { label: "Unisex Fragrances", percent: totalDemographics > 0 ? Math.round((unisexCount / totalDemographics) * 100) : 45, color: "bg-burgundy" },
-      { label: "Men's Fragrances", percent: totalDemographics > 0 ? Math.round((menCount / totalDemographics) * 100) : 35, color: "bg-champagne" },
-      { label: "Women's Fragrances", percent: totalDemographics > 0 ? Math.round((womenCount / totalDemographics) * 100) : 20, color: "bg-espresso" }
+      { label: "Unisex Fragrances", percent: unisexPct, color: "bg-burgundy" },
+      { label: "Men's Fragrances", percent: menPct, color: "bg-champagne" },
+      { label: "Women's Fragrances", percent: womenPct, color: "bg-espresso" }
     ];
 
     // Generate Sales Trend Chart Data
@@ -1537,53 +2285,62 @@ router.get("/admin/analytics", requireAuth, requireAdmin, async (req, res) => {
     if (targetRange === "7days") {
       const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
       for (let i = 6; i >= 0; i--) {
-        const d = new Date();
+        const d = new Date(now);
         d.setDate(now.getDate() - i);
         const dayLabel = days[d.getDay()];
-        
-        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
-        const dayEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
+
+        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+        const dayEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
         const dayRevenue = activeOrders
-          .filter(o => o.createdAt >= dayStart && o.createdAt <= dayEnd)
+          .filter((o) => {
+            const od = getOrderDate(o);
+            return od >= dayStart && od <= dayEnd;
+          })
           .reduce((sum, o) => sum + (o.amount || 0), 0);
 
         chartData.push({
           label: dayLabel,
-          value: Math.round(dayRevenue / 1000)
+          value: Number((dayRevenue / 1000).toFixed(1))
         });
       }
     } else if (targetRange === "12months") {
       const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       for (let i = 11; i >= 0; i--) {
-        const d = new Date();
-        d.setMonth(now.getMonth() - i);
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
         const monthLabel = months[d.getMonth()];
 
-        const monthStart = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0);
-        const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59);
+        const monthStart = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+        const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
         const monthRevenue = activeOrders
-          .filter(o => o.createdAt >= monthStart && o.createdAt <= monthEnd)
+          .filter((o) => {
+            const od = getOrderDate(o);
+            return od >= monthStart && od <= monthEnd;
+          })
           .reduce((sum, o) => sum + (o.amount || 0), 0);
 
         chartData.push({
           label: monthLabel,
-          value: Math.round(monthRevenue / 1000)
+          value: Number((monthRevenue / 1000).toFixed(1))
         });
       }
     } else {
+      // 30 days: 5 progressive 6-day periods
       for (let i = 4; i >= 0; i--) {
-        const endDay = new Date();
-        endDay.setDate(now.getDate() - (i * 6));
-        const startDay = new Date();
-        startDay.setDate(now.getDate() - ((i + 1) * 6));
+        const periodEnd = new Date(now.getTime() - i * 6 * 24 * 60 * 60 * 1000);
+        periodEnd.setHours(23, 59, 59, 999);
+        const periodStart = new Date(now.getTime() - (i + 1) * 6 * 24 * 60 * 60 * 1000 + 1000);
+        periodStart.setHours(0, 0, 0, 0);
 
-        const weekRevenue = activeOrders
-          .filter(o => o.createdAt >= startDay && o.createdAt <= endDay)
+        const periodRevenue = activeOrders
+          .filter((o) => {
+            const od = getOrderDate(o);
+            return od >= periodStart && od <= periodEnd;
+          })
           .reduce((sum, o) => sum + (o.amount || 0), 0);
 
         chartData.push({
           label: `Week ${5 - i}`,
-          value: Math.round(weekRevenue / 1000)
+          value: Number((periodRevenue / 1000).toFixed(1))
         });
       }
     }

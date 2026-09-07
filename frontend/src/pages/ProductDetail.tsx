@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router";
 import { getProductBySlug, products, formatPKR } from "../data/products";
 import { useStore } from "../store/store";
+import { useBrandStats } from "../context/BrandStatsContext";
 import BottleVisual from "../components/BottleVisual";
 import ProductCard from "../components/ProductCard";
 
@@ -9,7 +10,10 @@ export default function ProductDetail() {
   const { slug } = useParams<{ slug: string }>();
   const product = getProductBySlug(slug || "");
   const { state, dispatch } = useStore();
+  const { getBottlesSoldForProduct } = useBrandStats();
   const navigate = useNavigate();
+
+  const bottlesSold = product ? getBottlesSoldForProduct(product.id, product.name) : 0;
 
   if (!product) {
     return (
@@ -121,14 +125,18 @@ export default function ProductDetail() {
           {/* Info */}
           <div className="pt-4">
             {/* Tags */}
-            <div className="flex gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-4">
+              <span className="px-3 py-1 bg-espresso text-champagne text-[9px] tracking-[0.2em] uppercase font-semibold flex items-center gap-1.5 border border-champagne/30 shadow-xs">
+                <span>🔥</span>
+                <span>{bottlesSold}+ Bottles Delivered</span>
+              </span>
               {product.isBestSeller && (
-                <span className="px-3 py-1 bg-champagne text-dark-text text-[9px] tracking-[0.2em] uppercase font-semibold">
+                <span className="px-3 py-1 bg-champagne text-dark-text text-[9px] tracking-[0.2em] uppercase font-semibold shadow-xs">
                   Best Seller
                 </span>
               )}
               {product.isNewArrival && (
-                <span className="px-3 py-1 bg-burgundy text-cream text-[9px] tracking-[0.2em] uppercase font-semibold">
+                <span className="px-3 py-1 bg-burgundy text-cream text-[9px] tracking-[0.2em] uppercase font-semibold shadow-xs">
                   New Arrival
                 </span>
               )}
@@ -140,7 +148,7 @@ export default function ProductDetail() {
             <p className="text-xs tracking-[0.3em] text-muted-text mt-2">By SOHO · {product.family}</p>
 
             {/* Rating */}
-            <div className="flex items-center gap-2 mt-4">
+            <div className="flex flex-wrap items-center gap-2 mt-4">
               <div className="flex gap-0.5">
                 {[1, 2, 3, 4, 5].map((s) => (
                   <svg key={s} className={`w-3.5 h-3.5 ${s <= Math.round(product.rating) ? "fill-champagne" : "fill-cream stroke-champagne"}`} viewBox="0 0 20 20">
@@ -150,6 +158,11 @@ export default function ProductDetail() {
               </div>
               <span className="text-sm font-mono-custom text-dark-text">{product.rating}</span>
               <span className="text-xs text-muted-text">({product.reviews} reviews)</span>
+              <span className="text-xs text-muted-text/60 font-mono">•</span>
+              <span className="text-xs text-burgundy font-semibold font-mono flex items-center gap-1">
+                <span>🔥</span>
+                <span>{bottlesSold} Bottles Sold Across Pakistan</span>
+              </span>
             </div>
 
             <p className="text-muted-text leading-relaxed mt-6 text-sm">{product.description}</p>

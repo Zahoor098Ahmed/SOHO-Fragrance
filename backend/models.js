@@ -17,7 +17,9 @@ const userSchema = new mongoose.Schema({
   verificationCode: { type: String },
   isVerified: { type: Boolean, default: false },
   status: { type: String, enum: ["Active", "Inactive"], default: "Active" },
-  lastOtpSentAt: { type: Date }
+  lastOtpSentAt: { type: Date },
+  cart: { type: Array, default: [] },
+  wishlist: [{ type: String }]
 }, { timestamps: true });
 
 // Product Schema
@@ -44,7 +46,8 @@ const productSchema = new mongoose.Schema({
   baseNotes: [{ type: String }],
   gender: { type: String, enum: ["men", "women", "unisex"], default: "unisex" },
   tags: [{ type: String }],
-  image: { type: String, required: true }
+  image: { type: String, required: true },
+  bottlesSold: { type: Number, default: 0 }
 }, { timestamps: true });
 
 // Order Schema
@@ -57,11 +60,21 @@ const orderSchema = new mongoose.Schema({
   items: { type: String, required: true },
   amount: { type: Number, required: true },
   payment: { type: String, required: true },
+  paymentStatus: {
+    type: String,
+    enum: ["Pending Verification", "Paid", "Failed", "Refunded", "Unpaid"],
+    default: "Pending Verification"
+  },
+  paymentReceipt: { type: String, default: "" },
+  transactionRef: { type: String, default: "" },
+  verifiedBy: { type: String, default: "" },
+  verifiedAt: { type: Date },
   status: { type: String, default: "Pending" },
   date: { type: String, required: true },
   city: { type: String, required: true },
   address: { type: String, required: true },
-  province: { type: String, default: "Sindh" }
+  province: { type: String, default: "Sindh" },
+  cart: { type: Array, default: [] }
 }, { timestamps: true });
 
 // Configuration Schema

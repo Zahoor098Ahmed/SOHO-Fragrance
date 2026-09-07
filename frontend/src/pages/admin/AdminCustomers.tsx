@@ -27,6 +27,41 @@ interface Customer {
   currentOrder: string;
 }
 
+interface RepeatCustomerOrder {
+  id: string;
+  date: string;
+  status: string;
+  amount: number;
+  items: string;
+  payment: string;
+}
+
+interface RepeatCustomer {
+  key: string;
+  customer: string;
+  phone: string;
+  email: string;
+  city: string;
+  address: string;
+  ordersCount: number;
+  totalSpent: number;
+  firstOrderDate: string;
+  lastOrderDate: string;
+  orders: RepeatCustomerOrder[];
+}
+
+interface RepeatData {
+  summary: {
+    totalOrders: number;
+    uniqueCustomers: number;
+    repeatCustomersCount: number;
+    repeatOrdersCount: number;
+    repeatRevenue: number;
+    repeatRate: number;
+  };
+  repeatCustomers: RepeatCustomer[];
+}
+
 const statusColor: Record<string, string> = {
   Delivered: "text-green-700 bg-green-50",
   Shipped: "text-blue-700 bg-blue-50",
@@ -46,9 +81,17 @@ export default function AdminCustomers() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [orderStatusFilter, setOrderStatusFilter] = useState("All");
+  const [repeatOnly, setRepeatOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const limit = 10;
+
+  // Repeat Customers Analytics & Modal State
+  const [repeatData, setRepeatData] = useState<RepeatData | null>(null);
+  const [loadingRepeat, setLoadingRepeat] = useState(false);
+  const [showRepeatModal, setShowRepeatModal] = useState(false);
+  const [repeatSearchQuery, setRepeatSearchQuery] = useState("");
+  const [expandedCustomerKey, setExpandedCustomerKey] = useState<string | null>(null);
 
   // Selected customer for detailed view modal
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -59,6 +102,30 @@ export default function AdminCustomers() {
   const userStr = localStorage.getItem("soho_user");
   const authUser = userStr ? JSON.parse(userStr) : null;
   const token = authUser ? authUser.token : "";
+
+  const loadRepeatData = async () => {
+    setLoadingRepeat(true);
+    try {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
+      const res = await fetch(`${apiBase}/admin/repeat-customers`, {
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRepeatData(data);
+      }
+    } catch (err) {
+      console.error("Failed to load repeat customers:", err);
+    } finally {
+      setLoadingRepeat(false);
+    }
+  };
+
+  useEffect(() => {
+    loadRepeatData();
+  }, []);
 
   const fetchCustomers = async () => {
     setLoading(true);
@@ -128,8 +195,74 @@ export default function AdminCustomers() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-semibold text-dark-text tracking-wide">Customers</h1>
-          <p className="text-xs text-muted-text mt-1">Manage and view details of SOHO fragrance clientele (users with at least 1 successful order).</p>
+          <h1 className="font-display text-2xl font-semibold text-dark-text tracking-wide">Customers Management</h1>
+          <p className="text-xs text-muted-text mt-1">Manage and view details of SOHO fragrance clientele & repeat buyers.</p>
+        </div>
+      </div>
+
+      {/* Repeat Customers Overview Banner */}
+      <div className="bg-gradient-to-r from-ivory via-white to-amber-50/60 border border-amber-300/80 rounded-sm p-4 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-full bg-amber-500/10 border-2 border-amber-400 text-amber-800 text-xl flex items-center justify-center flex-shrink-0">
+              🔁
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-base font-display font-bold text-dark-text tracking-wide">
+                  Repeat Customers Tracking
+                </h2>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                  {repeatData?.summary.repeatCustomersCount || 0} Repeated Clients
+                </span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  {repeatData?.summary.repeatRate || 0}% Retention Rate
+                </span>
+              </div>
+              <p className="text-xs text-muted-text mt-0.5">
+                Overview of clients who have placed 2 or more orders with Maison SOHO Fragrance
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 sm:gap-6">
+            <div>
+              <p className="text-[10px] uppercase font-semibold text-muted-text">Repeat Clients</p>
+              <p className="text-sm font-bold font-mono-custom text-dark-text">
+                {repeatData ? `${repeatData.summary.repeatCustomersCount} / ${repeatData.summary.uniqueCustomers}` : "..."}
+                <span className="text-[11px] font-normal text-amber-800 ml-1">
+                  ({repeatData?.summary.repeatRate || 0}%)
+                </span>
+              </p>
+            </div>
+
+            <div className="h-8 w-px bg-cream hidden sm:block" />
+
+            <div>
+              <p className="text-[10px] uppercase font-semibold text-muted-text">Repeat Orders</p>
+              <p className="text-sm font-bold font-mono-custom text-dark-text">
+                {repeatData?.summary.repeatOrdersCount || 0} Orders
+              </p>
+            </div>
+
+            <div className="h-8 w-px bg-cream hidden sm:block" />
+
+            <div>
+              <p className="text-[10px] uppercase font-semibold text-muted-text">Repeat Revenue</p>
+              <p className="text-sm font-bold font-mono-custom text-green-700">
+                {repeatData ? formatPKR(repeatData.summary.repeatRevenue) : "..."}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowRepeatModal(true)}
+              className="px-3.5 py-2 bg-burgundy hover:bg-burgundy-light text-cream text-xs font-semibold tracking-wide rounded-sm transition-all shadow-xs flex items-center gap-1.5 cursor-pointer ml-auto sm:ml-0"
+            >
+              <span>👥</span>
+              <span>View Repeat Breakdown ({repeatData?.summary.repeatCustomersCount || 0})</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -175,6 +308,24 @@ export default function AdminCustomers() {
               ))}
             </select>
           </div>
+
+          <button
+            type="button"
+            onClick={() => { setRepeatOnly(!repeatOnly); setPage(1); }}
+            className={`px-3 py-1.5 text-xs rounded-sm transition-all cursor-pointer font-medium flex items-center gap-1.5 ${
+              repeatOnly
+                ? "bg-amber-700 text-white shadow-xs"
+                : "border border-amber-300 bg-amber-50/70 text-amber-900 hover:bg-amber-100"
+            }`}
+          >
+            <span>🔁</span>
+            <span>Repeat Customers (≥ 2 Orders)</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+              repeatOnly ? "bg-white text-amber-900" : "bg-amber-200 text-amber-950"
+            }`}>
+              {repeatData?.summary.repeatCustomersCount || 0}
+            </span>
+          </button>
         </div>
       </div>
 
@@ -190,9 +341,9 @@ export default function AdminCustomers() {
           <div className="text-center py-12 text-sm text-muted-text">
             Loading customers...
           </div>
-        ) : customers.length === 0 ? (
+        ) : (repeatOnly ? customers.filter((c) => c.totalOrders > 1) : customers).length === 0 ? (
           <div className="text-center py-12 text-sm text-muted-text">
-            No customers found.
+            {repeatOnly ? "No repeat customers found with 2 or more orders." : "No customers found."}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -210,7 +361,7 @@ export default function AdminCustomers() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-cream text-dark-text">
-                {customers.map((c) => (
+                {(repeatOnly ? customers.filter((c) => c.totalOrders > 1) : customers).map((c) => (
                   <tr key={c._id} className="hover:bg-ivory/40 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
@@ -219,7 +370,15 @@ export default function AdminCustomers() {
                         </div>
                         <div>
                           <p className="font-semibold font-display">{c.name}</p>
-                          <span className="text-[10px] text-burgundy bg-burgundy/5 px-1.5 py-0.5 rounded border border-burgundy/10 font-medium">Customer</span>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-[10px] text-burgundy bg-burgundy/5 px-1.5 py-0.5 rounded border border-burgundy/10 font-medium">Customer</span>
+                            {c.totalOrders > 1 && (
+                              <span className="text-[10px] text-amber-900 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300 font-bold flex items-center gap-1 shadow-2xs">
+                                <span>🔁</span>
+                                <span>Repeat Customer ({c.totalOrders} Orders)</span>
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -228,7 +387,13 @@ export default function AdminCustomers() {
                       <p className="text-[10px] text-muted-text mt-0.5">{c.phone || "No phone added"}</p>
                     </td>
                     <td className="px-6 py-4 text-xs">{c.customerSince}</td>
-                    <td className="px-6 py-4 text-xs font-mono text-center">{c.totalOrders}</td>
+                    <td className="px-6 py-4 text-xs font-mono text-center">
+                      <span className={`inline-block px-2.5 py-0.5 rounded-full font-bold text-xs ${
+                        c.totalOrders > 1 ? "bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs" : "text-dark-text"
+                      }`}>
+                        {c.totalOrders > 1 ? `🔁 ${c.totalOrders}` : c.totalOrders}
+                      </span>
+                    </td>
                     <td className="px-6 py-4 font-semibold text-burgundy">{formatPKR(c.totalSpent)}</td>
                     <td className="px-6 py-4 text-xs font-mono">
                       {c.currentOrder === "No Active Order" ? (
@@ -306,6 +471,15 @@ export default function AdminCustomers() {
               </button>
             </div>
 
+            {selectedCustomer.totalOrders > 1 && (
+              <div className="mt-4 p-3 bg-amber-50 border border-amber-300 rounded-sm text-xs text-amber-900 flex items-center gap-2">
+                <span className="text-base">🔁</span>
+                <div>
+                  <strong>Repeat Client:</strong> This customer has placed {selectedCustomer.totalOrders} orders totaling {formatPKR(selectedCustomer.totalSpent)}.
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-3 gap-4 my-5 bg-ivory p-4 border border-cream rounded-sm text-center">
               <div>
                 <p className="text-[10px] text-muted-text tracking-wider uppercase font-semibold">Customer Since</p>
@@ -371,6 +545,311 @@ export default function AdminCustomers() {
                 className="px-4 py-2 bg-espresso hover:bg-espresso/95 text-cream rounded-sm tracking-wider uppercase font-semibold cursor-pointer"
               >
                 Close details
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Repeat Customers Breakdown Modal (Kon kon se user aur kitne user repeated hain) */}
+      {showRepeatModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-sm max-w-4xl w-full p-5 sm:p-6 shadow-2xl border border-cream max-h-[92vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between border-b border-cream pb-4 mb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">🔁</span>
+                  <h2 className="font-display text-xl font-bold text-dark-text">
+                    Repeat Customers Breakdown
+                  </h2>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                    {repeatData?.summary.repeatCustomersCount || 0} Repeated Clients
+                  </span>
+                </div>
+                <p className="text-xs text-muted-text mt-1">
+                  Kon kon se user aur kitne user repeated hain — Complete profile, contact details, total spend & order history.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowRepeatModal(false)}
+                className="text-muted-text hover:text-dark-text p-1.5 rounded-sm hover:bg-ivory transition-colors cursor-pointer"
+                title="Close"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Top 4 Summary Metrics */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              <div className="bg-ivory/70 border border-cream p-3 rounded-sm">
+                <p className="text-[10px] uppercase font-semibold text-muted-text">Repeat Customers</p>
+                <p className="text-lg font-bold font-mono-custom text-dark-text mt-0.5">
+                  {repeatData?.summary.repeatCustomersCount || 0}
+                  <span className="text-xs font-normal text-muted-text ml-1">
+                    / {repeatData?.summary.uniqueCustomers || 0}
+                  </span>
+                </p>
+                <p className="text-[10px] text-amber-800 font-medium mt-0.5">
+                  {repeatData?.summary.repeatRate || 0}% Customer Retention
+                </p>
+              </div>
+
+              <div className="bg-ivory/70 border border-cream p-3 rounded-sm">
+                <p className="text-[10px] uppercase font-semibold text-muted-text">Repeat Orders</p>
+                <p className="text-lg font-bold font-mono-custom text-dark-text mt-0.5">
+                  {repeatData?.summary.repeatOrdersCount || 0}
+                  <span className="text-xs font-normal text-muted-text ml-1">
+                    / {repeatData?.summary.totalOrders || 0}
+                  </span>
+                </p>
+                <p className="text-[10px] text-muted-text mt-0.5">
+                  {repeatData && repeatData.summary.totalOrders > 0
+                    ? Math.round((repeatData.summary.repeatOrdersCount / repeatData.summary.totalOrders) * 100)
+                    : 0}% of store orders
+                </p>
+              </div>
+
+              <div className="bg-ivory/70 border border-cream p-3 rounded-sm">
+                <p className="text-[10px] uppercase font-semibold text-muted-text">Repeat Revenue</p>
+                <p className="text-lg font-bold font-mono-custom text-green-700 mt-0.5">
+                  {repeatData ? formatPKR(repeatData.summary.repeatRevenue) : "..."}
+                </p>
+                <p className="text-[10px] text-muted-text mt-0.5">From returning clients</p>
+              </div>
+
+              <div className="bg-ivory/70 border border-cream p-3 rounded-sm">
+                <p className="text-[10px] uppercase font-semibold text-muted-text">Avg Spend / Repeat</p>
+                <p className="text-lg font-bold font-mono-custom text-champagne mt-0.5">
+                  {repeatData && repeatData.summary.repeatCustomersCount > 0
+                    ? formatPKR(Math.round(repeatData.summary.repeatRevenue / repeatData.summary.repeatCustomersCount))
+                    : "PKR 0"}
+                </p>
+                <p className="text-[10px] text-muted-text mt-0.5">Lifetime Client Value</p>
+              </div>
+            </div>
+
+            {/* Search Input Filter */}
+            <div className="mb-4">
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Search repeat customers by name, phone (+92...), email, or city..."
+                  value={repeatSearchQuery}
+                  onChange={(e) => setRepeatSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 text-xs border border-cream rounded-sm focus:border-champagne outline-none bg-ivory/30"
+                />
+                <span className="absolute left-3 top-2.5 text-xs text-muted-text">🔍</span>
+                {repeatSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setRepeatSearchQuery("")}
+                    className="absolute right-3 top-2 text-xs text-muted-text hover:text-dark-text"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Customers List with Accordion */}
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              {loadingRepeat ? (
+                <div className="text-center py-12 text-xs text-muted-text">
+                  Loading repeat customers breakdown...
+                </div>
+              ) : !repeatData || repeatData.repeatCustomers.length === 0 ? (
+                <div className="text-center py-12 bg-ivory/40 rounded border border-dashed border-cream p-6">
+                  <p className="text-sm font-semibold text-dark-text">No Repeat Customers Found</p>
+                  <p className="text-xs text-muted-text mt-1">
+                    Clients who place 2 or more orders will automatically appear here.
+                  </p>
+                </div>
+              ) : (
+                (() => {
+                  const filteredList = repeatData.repeatCustomers.filter((c) => {
+                    if (!repeatSearchQuery.trim()) return true;
+                    const q = repeatSearchQuery.toLowerCase();
+                    return (
+                      (c.customer && c.customer.toLowerCase().includes(q)) ||
+                      (c.phone && c.phone.toLowerCase().includes(q)) ||
+                      (c.email && c.email.toLowerCase().includes(q)) ||
+                      (c.city && c.city.toLowerCase().includes(q)) ||
+                      (c.address && c.address.toLowerCase().includes(q))
+                    );
+                  });
+
+                  if (filteredList.length === 0) {
+                    return (
+                      <div className="text-center py-8 text-xs text-muted-text">
+                        No repeat customers found matching "{repeatSearchQuery}".
+                      </div>
+                    );
+                  }
+
+                  return filteredList.map((cust) => {
+                    const isExpanded = expandedCustomerKey === cust.key;
+                    const initials = (cust.customer || "CU")
+                      .split(" ")
+                      .map((w) => w[0])
+                      .slice(0, 2)
+                      .join("")
+                      .toUpperCase();
+
+                    return (
+                      <div
+                        key={cust.key}
+                        className="border border-cream rounded-sm bg-white overflow-hidden shadow-xs hover:border-champagne/70 transition-all"
+                      >
+                        {/* Customer Header Card */}
+                        <div className="p-4 bg-gradient-to-r from-ivory/50 via-white to-transparent flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-cream/80">
+                          <div className="flex items-center gap-3">
+                            <div className="w-11 h-11 rounded-full bg-amber-500/10 border-2 border-amber-400 text-amber-900 font-bold flex items-center justify-center text-sm shadow-xs flex-shrink-0">
+                              {initials}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="font-display text-sm font-bold text-dark-text">
+                                  {cust.customer}
+                                </h3>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                  🔁 {cust.ordersCount} Orders Placed
+                                </span>
+                              </div>
+                              <p className="text-xs text-muted-text mt-0.5">
+                                First Order: <strong className="text-dark-text">{cust.firstOrderDate}</strong> · Recent: <strong className="text-dark-text">{cust.lastOrderDate}</strong>
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                            <div className="text-left sm:text-right mr-2">
+                              <p className="text-[10px] uppercase font-semibold text-muted-text">Total Spent</p>
+                              <p className="text-sm font-bold font-mono-custom text-green-700">
+                                {formatPKR(cust.totalSpent)}
+                              </p>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setExpandedCustomerKey(isExpanded ? null : cust.key)}
+                              className="px-2.5 py-1.5 bg-champagne/15 hover:bg-champagne/25 text-dark-text rounded text-xs transition-colors flex items-center gap-1 cursor-pointer font-medium"
+                            >
+                              <span>{isExpanded ? "▲ Hide Orders" : `▼ View ${cust.orders.length} Orders`}</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Customer Contact & Delivery Info */}
+                        <div className="px-4 py-3 bg-ivory/20 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs border-b border-cream/50">
+                          <div>
+                            <span className="text-[10px] uppercase text-muted-text font-semibold block">Phone Number</span>
+                            <a
+                              href={`tel:${cust.phone}`}
+                              className="font-mono text-dark-text font-medium hover:text-burgundy underline"
+                            >
+                              📞 {cust.phone}
+                            </a>
+                          </div>
+
+                          <div>
+                            <span className="text-[10px] uppercase text-muted-text font-semibold block">Email Address</span>
+                            {cust.email && cust.email !== "—" ? (
+                              <a
+                                href={`mailto:${cust.email}`}
+                                className="text-dark-text font-medium hover:text-burgundy underline truncate block max-w-xs"
+                              >
+                                ✉️ {cust.email}
+                              </a>
+                            ) : (
+                              <span className="text-muted-text italic">No email provided</span>
+                            )}
+                          </div>
+
+                          <div>
+                            <span className="text-[10px] uppercase text-muted-text font-semibold block">Delivery Location</span>
+                            <p className="text-dark-text font-medium truncate" title={`${cust.address}, ${cust.city}`}>
+                              📍 {cust.city} {cust.address && cust.address !== "—" ? `· ${cust.address}` : ""}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Expandable Order History Table */}
+                        {isExpanded && (
+                          <div className="p-4 bg-white animate-fade-in">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="text-xs font-bold uppercase tracking-wider text-muted-text">
+                                Complete Order History ({cust.orders.length} Orders)
+                              </h4>
+                              <span className="text-[11px] text-muted-text">
+                                Sorted newest to oldest
+                              </span>
+                            </div>
+
+                            <div className="overflow-x-auto border border-cream rounded-sm">
+                              <table className="w-full text-left text-xs">
+                                <thead>
+                                  <tr className="bg-ivory border-b border-cream text-muted-text text-[11px]">
+                                    <th className="px-3 py-2 font-normal">Order ID</th>
+                                    <th className="px-3 py-2 font-normal">Date</th>
+                                    <th className="px-3 py-2 font-normal">Items Ordered</th>
+                                    <th className="px-3 py-2 font-normal">Amount</th>
+                                    <th className="px-3 py-2 font-normal">Payment</th>
+                                    <th className="px-3 py-2 font-normal">Status</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-cream">
+                                  {cust.orders.map((ord) => (
+                                    <tr key={ord.id} className="hover:bg-ivory/30 transition-colors">
+                                      <td className="px-3 py-2 font-mono font-semibold text-dark-text">
+                                        {ord.id}
+                                      </td>
+                                      <td className="px-3 py-2 text-muted-text whitespace-nowrap">
+                                        {ord.date}
+                                      </td>
+                                      <td className="px-3 py-2 text-dark-text max-w-xs truncate" title={ord.items}>
+                                        {ord.items}
+                                      </td>
+                                      <td className="px-3 py-2 font-mono font-bold text-dark-text">
+                                        {formatPKR(ord.amount)}
+                                      </td>
+                                      <td className="px-3 py-2 text-muted-text">
+                                        {ord.payment}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-semibold ${statusColor[ord.status] || "text-gray-600 bg-gray-50"}`}>
+                                          {ord.status}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                })()
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-4 mt-4 border-t border-cream flex items-center justify-between">
+              <span className="text-xs text-muted-text">
+                Showing data dynamically calculated across all customer orders.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowRepeatModal(false)}
+                className="px-4 py-2 bg-burgundy hover:bg-burgundy-light text-cream text-xs font-semibold rounded-sm transition-colors cursor-pointer"
+              >
+                Close Window
               </button>
             </div>
           </div>

@@ -2,7 +2,7 @@ import { Link, useNavigate } from "react-router";
 import type { Product } from "../data/products";
 import { formatPKR } from "../data/products";
 import { useStore } from "../store/store";
-import BottleVisual from "./BottleVisual";
+import { useBrandStats } from "../context/BrandStatsContext";
 
 interface Props {
   product: Product;
@@ -11,9 +11,12 @@ interface Props {
 
 export default function ProductCard({ product, variant = "light" }: Props) {
   const { state, dispatch } = useStore();
+  const { getBottlesSoldForProduct } = useBrandStats();
   const navigate = useNavigate();
   const isWishlisted = state.wishlist.includes(product.id);
   const isDark = variant === "dark";
+
+  const bottlesSold = getBottlesSoldForProduct(product.id, product.name);
 
   const handleAddToCart = () => {
     if (!state.user) {
@@ -37,14 +40,20 @@ export default function ProductCard({ product, variant = "light" }: Props) {
   return (
     <div className={`group relative flex flex-col card-hover rounded-sm overflow-hidden ${isDark ? "bg-espresso" : "bg-ivory"}`}>
       {/* Badges */}
-      <div className="absolute top-3 left-3 z-10 flex flex-col gap-1">
+      <div className="absolute top-3 left-3 z-10 flex flex-col gap-1 items-start">
+        {/* Real-time Bottles Sold Social Proof Badge */}
+        <span className="px-2 py-0.5 bg-espresso/90 text-champagne text-[8px] tracking-wider uppercase font-semibold rounded-sm backdrop-blur-xs flex items-center gap-1 border border-champagne/30 shadow-xs">
+          <span>🔥</span>
+          <span>{bottlesSold}+ Sold</span>
+        </span>
+
         {product.isBestSeller && (
-          <span className="px-2 py-0.5 bg-champagne text-dark-text text-[8px] tracking-wider uppercase font-semibold rounded-sm">
+          <span className="px-2 py-0.5 bg-champagne text-dark-text text-[8px] tracking-wider uppercase font-semibold rounded-sm shadow-xs">
             Best Seller
           </span>
         )}
         {product.isNewArrival && (
-          <span className="px-2 py-0.5 bg-burgundy text-cream text-[8px] tracking-wider uppercase font-semibold rounded-sm">
+          <span className="px-2 py-0.5 bg-burgundy text-cream text-[8px] tracking-wider uppercase font-semibold rounded-sm shadow-xs">
             New Arrival
           </span>
         )}
@@ -87,6 +96,13 @@ export default function ProductCard({ product, variant = "light" }: Props) {
             </svg>
             <span className="text-xs font-mono-custom text-dark-text font-semibold">{product.rating}</span>
           </div>
+        </div>
+
+        {/* Bottles sold subtle counter */}
+        <div className="flex items-center gap-1.5 text-[10px] font-mono text-muted-text">
+          <span className="text-burgundy font-semibold">{bottlesSold} bottles delivered</span>
+          <span>•</span>
+          <span className="text-emerald-700 font-medium">In Stock</span>
         </div>
 
         <div className={`text-xs ${isDark ? "text-cream/40" : "text-muted-text/70"} font-mono-custom mt-auto pt-2`}>

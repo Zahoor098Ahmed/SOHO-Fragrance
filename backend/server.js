@@ -5,6 +5,8 @@ import dotenv from "dotenv";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import bcrypt from "bcryptjs";
+import path from "path";
+import fs from "fs";
 import router from "./routes.js";
 import { User, Product, Config, Order, Review } from "./models.js";
 
@@ -12,8 +14,20 @@ dotenv.config();
 
 const app = express();
 
+// Ensure upload directory exists for payment receipts
+const uploadDir = path.join(process.cwd(), "uploads", "receipts");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 // 1. High Security Middlewares
-app.use(helmet()); // Secure HTTP headers
+// Allow cross-origin resource sharing for static uploaded images while keeping other secure headers
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+// Serve uploaded receipts statically
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // CORS configuration - Only allow frontend origin access
 app.use(cors({
@@ -35,7 +49,7 @@ const apiLimiter = rateLimit({
 app.use("/api", apiLimiter);
 
 // Parse JSON with limit (prevent huge payload DOS attacks)
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // 2. Database Connection
 const mongoURI = process.env.MONGODB_URI || "mongodb://localhost:27017/soho_fragrance";
@@ -433,11 +447,15 @@ async function seedDatabase() {
     for (const p of defaultProducts) {
       const exists = await Product.findOne({ slug: p.slug });
       if (!exists) {
+        const initialOffsets = { "01": 380, "12": 350, "02": 340, "07": 290, "03": 270, "04": 260, "06": 240, "10": 220, "05": 200, "08": 170, "11": 150, "09": 130 };
+        p.bottlesSold = initialOffsets[p.id] || 200;
         await Product.create(p);
       } else {
-        // Enforce the 'id' field is present and in sync with seed details
+        const initialOffsets = { "01": 380, "12": 350, "02": 340, "07": 290, "03": 270, "04": 260, "06": 240, "10": 220, "05": 200, "08": 170, "11": 150, "09": 130 };
+        if (exists.bottlesSold === undefined || exists.bottlesSold === null) {
+          exists.bottlesSold = initialOffsets[p.id] || 200;
+        }
         exists.id = p.id;
-        // Optionally sync other fields if needed, but definitely need id
         await exists.save();
       }
     }

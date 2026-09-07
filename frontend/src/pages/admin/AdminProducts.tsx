@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { products, saveStoredProducts, formatPKR } from "../../data/products";
 import type { Product } from "../../data/products";
+import { useBrandStats } from "../../context/BrandStatsContext";
 
 // A few preset premium perfume images from Unsplash for easy selection, or they can input their own URL
 const PRESET_IMAGES = [
@@ -17,6 +18,7 @@ const PRESET_IMAGES = [
 export default function AdminProducts() {
   const [localProducts, setLocalProducts] = useState<Product[]>([...products]);
   const [search, setSearch] = useState("");
+  const { getBottlesSoldForProduct } = useBrandStats();
 
   // Modal state: null means closed, active product means editing/adding
   const [modalOpen, setModalOpen] = useState(false);
@@ -162,32 +164,41 @@ export default function AdminProducts() {
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">50ml</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">100ml</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider hidden lg:table-cell">Stock</th>
+                <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">Bottles Sold</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">Status</th>
                 <th className="text-right px-5 py-3 text-xs text-muted-text font-normal tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => (
-                <tr key={p.id} className="border-t border-cream hover:bg-ivory/50 transition-colors">
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-3">
-                      <img src={p.image} alt={p.name} className="w-10 h-12 object-cover rounded-sm flex-shrink-0" />
-                      <div>
-                        <p className="font-display font-semibold text-dark-text text-sm">{p.name}</p>
-                        <p className="text-[10px] text-muted-text tracking-wider">By SOHO</p>
+              {filtered.map((p) => {
+                const bottlesSold = getBottlesSoldForProduct(p.id, p.name);
+                return (
+                  <tr key={p.id} className="border-t border-cream hover:bg-ivory/50 transition-colors">
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-3">
+                        <img src={p.image} alt={p.name} className="w-10 h-12 object-cover rounded-sm flex-shrink-0" />
+                        <div>
+                          <p className="font-display font-semibold text-dark-text text-sm">{p.name}</p>
+                          <p className="text-[10px] text-muted-text tracking-wider">By SOHO</p>
+                        </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-5 py-3 hidden md:table-cell text-muted-text text-xs">{p.family}</td>
-                  <td className="px-5 py-3 font-mono-custom text-dark-text text-xs">{formatPKR(p.price50ml)}</td>
-                  <td className="px-5 py-3 font-mono-custom text-dark-text text-xs">{formatPKR(p.price100ml)}</td>
-                  <td className="px-5 py-3 hidden lg:table-cell text-xs text-muted-text">{p.stock50ml} / {p.stock100ml}</td>
-                  <td className="px-5 py-3">
-                    <div className="flex gap-1 flex-wrap">
-                      {p.isBestSeller && <span className="px-1.5 py-0.5 bg-champagne/20 text-dark-text text-[9px] rounded-sm">Best Seller</span>}
-                      {p.isNewArrival && <span className="px-1.5 py-0.5 bg-burgundy/10 text-burgundy text-[9px] rounded-sm">New</span>}
-                    </div>
-                  </td>
+                    </td>
+                    <td className="px-5 py-3 hidden md:table-cell text-muted-text text-xs">{p.family}</td>
+                    <td className="px-5 py-3 font-mono-custom text-dark-text text-xs">{formatPKR(p.price50ml)}</td>
+                    <td className="px-5 py-3 font-mono-custom text-dark-text text-xs">{formatPKR(p.price100ml)}</td>
+                    <td className="px-5 py-3 hidden lg:table-cell text-xs text-muted-text">{p.stock50ml} / {p.stock100ml}</td>
+                    <td className="px-5 py-3">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-espresso text-champagne text-[11px] font-mono font-semibold border border-champagne/30">
+                        <span>🔥</span>
+                        <span>{bottlesSold} sold</span>
+                      </span>
+                    </td>
+                    <td className="px-5 py-3">
+                      <div className="flex gap-1 flex-wrap">
+                        {p.isBestSeller && <span className="px-1.5 py-0.5 bg-champagne/20 text-dark-text text-[9px] rounded-sm">Best Seller</span>}
+                        {p.isNewArrival && <span className="px-1.5 py-0.5 bg-burgundy/10 text-burgundy text-[9px] rounded-sm">New</span>}
+                      </div>
+                    </td>
                   <td className="px-5 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
                       <button
@@ -205,8 +216,9 @@ export default function AdminProducts() {
                     </div>
                   </td>
                 </tr>
-              ))}
-            </tbody>
+              );
+            })}
+          </tbody>
           </table>
         </div>
       </div>

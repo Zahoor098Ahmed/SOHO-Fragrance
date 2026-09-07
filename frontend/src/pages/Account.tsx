@@ -18,7 +18,28 @@ export default function Account() {
   const [activeTab, setActiveTab] = useState<"orders" | "profile" | "addresses" | "preferences">("orders");
   const [isEditing, setIsEditing] = useState(false);
   const [isEditingAddress, setIsEditingAddress] = useState(false);
-  const [userOrders, setUserOrders] = useState<Order[]>([]);
+  const getInitialUserOrders = (): Order[] => {
+    try {
+      const saved = localStorage.getItem("soho_user_orders");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (_) {}
+    return [];
+  };
+
+  const [userOrders, setUserOrders] = useState<Order[]>(getInitialUserOrders);
+  const [orderPage, setOrderPage] = useState<number>(1);
+  const ORDERS_PER_PAGE = 5;
+  const totalOrderPages = Math.ceil(userOrders.length / ORDERS_PER_PAGE) || 1;
+  const paginatedOrders = userOrders.slice((orderPage - 1) * ORDERS_PER_PAGE, orderPage * ORDERS_PER_PAGE);
+
+  useEffect(() => {
+    if (orderPage > totalOrderPages && totalOrderPages > 0) {
+      setOrderPage(1);
+    }
+  }, [userOrders.length, totalOrderPages, orderPage]);
 
   const [userProfile, setUserProfile] = useState({
     name: state.user?.name || "Guest User",
@@ -99,19 +120,32 @@ export default function Account() {
         const userStr = localStorage.getItem("soho_user");
         const token = userStr ? JSON.parse(userStr).token : "";
         const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
+        const emailParam = state.user.email ? `?email=${encodeURIComponent(state.user.email)}` : "";
 
-        const res = await fetch(`${apiBase}/orders`, {
-          headers: {
-            "Authorization": `Bearer ${token}`
-          }
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        const res = await fetch(`${apiBase}/orders${emailParam}`, {
+          headers
         });
         if (res.ok) {
           const data = await res.json();
-          // The backend already filters orders securely for the logged-in user
-          setUserOrders(data);
+          if (Array.isArray(data)) {
+            const localSaved = getInitialUserOrders();
+            const orderMap = new Map<string, Order>();
+            data.forEach((o: Order) => orderMap.set(o.id, o));
+            localSaved.forEach((o: Order) => {
+              if (!orderMap.has(o.id)) orderMap.set(o.id, o);
+            });
+            const merged = Array.from(orderMap.values());
+            setUserOrders(merged);
+            try {
+              localStorage.setItem("soho_user_orders", JSON.stringify(merged));
+            } catch (_) {}
+          }
         }
       } catch (err) {
-        console.error(err);
+        console.error("Failed to fetch user orders:", err);
       }
     };
     fetchUserOrders();
@@ -255,13 +289,25 @@ export default function Account() {
           <div className="lg:col-span-3 bg-white border border-cream p-6 lg:p-8 rounded-sm">
             {activeTab === "orders" && (
               <div>
-                <h2 className="font-display text-2xl text-dark-text mb-6">Recent Orders</h2>
+                <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+                  <div>
+                    <h2 className="font-display text-2xl text-dark-text">Recent Orders</h2>
+                    <p className="text-xs text-muted-text mt-1">View tracking details, items and delivery invoices for your purchases.</p>
+                  </div>
+                  {userOrders.length > 0 && (
+                    <span className="text-xs text-muted-text font-medium bg-ivory border border-cream px-3 py-1.5 rounded-sm">
+                      Showing <span className="font-semibold text-dark-text">{Math.min((orderPage - 1) * ORDERS_PER_PAGE + 1, userOrders.length)}</span>–
+                      <span className="font-semibold text-dark-text">{Math.min(orderPage * ORDERS_PER_PAGE, userOrders.length)}</span> of <span className="font-semibold text-dark-text">{userOrders.length}</span> orders
+                    </span>
+                  )}
+                </div>
+
                 {userOrders.length === 0 ? (
-                  <p className="text-muted-text text-sm">You haven't placed any orders yet.</p>
+                  <p className="text-muted-text text-sm py-8 text-center bg-ivory border border-cream rounded-sm">You haven't placed any orders yet.</p>
                 ) : (
                   <div className="space-y-6">
-                    {userOrders.map((order) => (
-                      <div key={order.id} className="border border-cream rounded-sm p-5 space-y-4">
+                    {paginatedOrders.map((order) => (
+                      <div key={order.id} className="border border-cream rounded-sm p-5 space-y-4 hover:border-champagne/40 transition-colors">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cream pb-4">
                           <div>
                             <span className="text-xs text-muted-text">Order ID</span>
@@ -293,6 +339,57 @@ export default function Account() {
                         </div>
                       </div>
                     ))}
+
+                    {/* Pagination Controls */}
+                    {totalOrderPages > 1 && (
+                      <div className="pt-4 border-t border-cream flex flex-wrap items-center justify-between gap-4">
+                        <p className="text-xs text-muted-text">
+                          Page <span className="font-semibold text-dark-text">{orderPage}</span> of <span className="font-semibold text-dark-text">{totalOrderPages}</span>
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={orderPage === 1}
+                            onClick={() => setOrderPage((p) => Math.max(1, p - 1))}
+                            className={`px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded-sm transition-all border ${
+                              orderPage === 1
+                                ? "border-cream text-muted-text/50 cursor-not-allowed bg-cream/20"
+                                : "border-cream text-dark-text hover:bg-champagne/10 hover:border-champagne cursor-pointer"
+                            }`}
+                          >
+                            ← Previous
+                          </button>
+
+                          {Array.from({ length: totalOrderPages }, (_, i) => i + 1).map((num) => (
+                            <button
+                              key={num}
+                              type="button"
+                              onClick={() => setOrderPage(num)}
+                              className={`w-8 h-8 flex items-center justify-center text-xs font-semibold rounded-sm transition-all cursor-pointer ${
+                                orderPage === num
+                                  ? "bg-burgundy text-cream shadow-sm"
+                                  : "border border-cream text-dark-text hover:bg-champagne/10"
+                              }`}
+                            >
+                              {num}
+                            </button>
+                          ))}
+
+                          <button
+                            type="button"
+                            disabled={orderPage === totalOrderPages}
+                            onClick={() => setOrderPage((p) => Math.min(totalOrderPages, p + 1))}
+                            className={`px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded-sm transition-all border ${
+                              orderPage === totalOrderPages
+                                ? "border-cream text-muted-text/50 cursor-not-allowed bg-cream/20"
+                                : "border-cream text-dark-text hover:bg-champagne/10 hover:border-champagne cursor-pointer"
+                            }`}
+                          >
+                            Next 5 →
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -4,11 +4,13 @@ import { products, formatPKR, Product } from "../data/products";
 import ProductCard from "../components/ProductCard";
 import BottleVisual from "../components/BottleVisual";
 import { useStore } from "../store/store";
+import { useBrandStats } from "../context/BrandStatsContext";
 
 export default function Home() {
   const [loaded, setLoaded] = useState(false);
   const [heroVisible, setHeroVisible] = useState(false);
   const { state, dispatch } = useStore();
+  const { stats } = useBrandStats();
   const soverane = (state.products.find((p) => p.slug === "soverane") || products.find((p) => p.slug === "soverane")!) as Product;
   const bestSellers = state.products.filter((p) => p.isBestSeller).slice(0, 4) as Product[];
 
@@ -78,16 +80,17 @@ export default function Home() {
               </Link>
             </div>
 
-            {/* Stats */}
-            <div className="flex gap-10 mt-12 pt-8 border-t border-cream/10">
+            {/* Dynamic Social Proof Stats */}
+            <div className="flex flex-wrap gap-6 sm:gap-8 mt-12 pt-8 border-t border-cream/10">
               {[
-                { value: "12", label: "Fragrances" },
-                { value: "10+", label: "Hours longevity" },
-                { value: "PKR", label: "Local pricing" },
+                { value: `${stats.totalCustomers.toLocaleString()}+`, label: "Happy Customers" },
+                { value: `${stats.repeatCustomers.toLocaleString()}+`, label: "Repeat Patrons" },
+                { value: `${stats.totalBottlesSold.toLocaleString()}+`, label: "Bottles Delivered" },
+                { value: "12", label: "Artisanal Blends" },
               ].map((stat) => (
                 <div key={stat.label}>
-                  <div className="font-display text-2xl text-champagne font-light">{stat.value}</div>
-                  <div className="text-[10px] text-cream/40 tracking-[0.2em] uppercase mt-0.5">{stat.label}</div>
+                  <div className="font-display text-xl sm:text-2xl text-champagne font-light">{stat.value}</div>
+                  <div className="text-[9px] sm:text-[10px] text-cream/50 tracking-[0.18em] uppercase mt-0.5">{stat.label}</div>
                 </div>
               ))}
             </div>
@@ -142,6 +145,67 @@ export default function Home() {
           </p>
           <div className="section-divider mt-8" />
           <p className="text-xs tracking-[0.3em] text-muted-text uppercase mt-6">SOHO Fragrance · Karachi, Pakistan</p>
+        </div>
+      </section>
+
+      {/* Social Proof & Brand Trust Milestones Section */}
+      <section className="bg-espresso text-cream py-16 px-6 relative overflow-hidden border-y border-champagne/20">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-champagne/5 via-transparent to-transparent pointer-events-none" />
+        <div className="max-w-7xl mx-auto relative z-10">
+          <div className="text-center max-w-2xl mx-auto mb-12">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-semibold tracking-[0.25em] uppercase bg-champagne/10 text-champagne border border-champagne/30 mb-3">
+              <span className="w-1.5 h-1.5 rounded-full bg-champagne animate-pulse" />
+              Proven Heritage & Connoisseur Trust
+            </span>
+            <h2 className="font-display text-3xl sm:text-4xl text-cream font-light tracking-wide">
+              Trusted by Thousands. Cherished Repeatedly.
+            </h2>
+            <p className="text-xs sm:text-sm text-cream/60 mt-3 font-light leading-relaxed">
+              Our high-concentration Extrait de Parfum formulations have won the loyalty of perfume lovers nationwide.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+            <div className="bg-white/5 border border-cream/10 p-6 rounded-sm text-center backdrop-blur-xs hover:border-champagne/40 transition-colors">
+              <div className="font-display text-3xl sm:text-4xl text-champagne font-bold tracking-tight">
+                {stats.totalCustomers.toLocaleString()}+
+              </div>
+              <div className="text-xs uppercase tracking-[0.2em] text-cream/90 font-semibold mt-2">
+                Valued Customers
+              </div>
+              <p className="text-[11px] text-cream/50 mt-1">Patrons nationwide across Pakistan</p>
+            </div>
+
+            <div className="bg-white/5 border border-cream/10 p-6 rounded-sm text-center backdrop-blur-xs hover:border-champagne/40 transition-colors">
+              <div className="font-display text-3xl sm:text-4xl text-champagne font-bold tracking-tight">
+                {stats.repeatCustomers.toLocaleString()}+
+              </div>
+              <div className="text-xs uppercase tracking-[0.2em] text-cream/90 font-semibold mt-2">
+                Repeat Connoisseurs
+              </div>
+              <p className="text-[11px] text-cream/50 mt-1">{stats.repeatRate} repurchase rate</p>
+            </div>
+
+            <div className="bg-white/5 border border-cream/10 p-6 rounded-sm text-center backdrop-blur-xs hover:border-champagne/40 transition-colors">
+              <div className="font-display text-3xl sm:text-4xl text-champagne font-bold tracking-tight">
+                {stats.totalBottlesSold.toLocaleString()}+
+              </div>
+              <div className="text-xs uppercase tracking-[0.2em] text-cream/90 font-semibold mt-2">
+                Bottles Delivered
+              </div>
+              <p className="text-[11px] text-cream/50 mt-1">Handcrafted & verified formulations</p>
+            </div>
+
+            <div className="bg-white/5 border border-cream/10 p-6 rounded-sm text-center backdrop-blur-xs hover:border-champagne/40 transition-colors">
+              <div className="font-display text-3xl sm:text-4xl text-champagne font-bold tracking-tight">
+                12
+              </div>
+              <div className="text-xs uppercase tracking-[0.2em] text-cream/90 font-semibold mt-2">
+                Artisanal Blends
+              </div>
+              <p className="text-[11px] text-cream/50 mt-1">Extrait de Parfum concentration</p>
+            </div>
+          </div>
         </div>
       </section>
 

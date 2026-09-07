@@ -12,10 +12,13 @@ export interface CartItem {
 }
 
 export interface User {
+  id?: string;
   email: string;
   name: string;
   role: "user" | "admin" | "superadmin";
   token?: string;
+  cart?: CartItem[];
+  wishlist?: string[];
 }
 
 interface StoreState {
@@ -83,6 +86,9 @@ function reducer(state: StoreState, action: Action): StoreState {
         ),
       };
     case "CLEAR_CART":
+      try {
+        localStorage.removeItem("soho_cart");
+      } catch (_) {}
       return { ...state, cart: [] };
     case "TOGGLE_CART":
       return { ...state, isCartOpen: !state.isCartOpen };
@@ -97,18 +103,83 @@ function reducer(state: StoreState, action: Action): StoreState {
           ? state.wishlist.filter((id) => id !== action.productId)
           : [...state.wishlist, action.productId],
       };
-    case "SET_USER":
+    case "SET_USER": {
       if (action.user) {
         localStorage.setItem("soho_user", JSON.stringify(action.user));
+        const emailKey = action.user.email.toLowerCase().trim();
+
+        // Retrieve user's stored cart from localStorage or from server user object
+        let userSavedCart: CartItem[] = [];
+        try {
+          const raw = localStorage.getItem(`soho_cart_${emailKey}`);
+          if (raw) userSavedCart = JSON.parse(raw);
+        } catch (_) {}
+
+        if ((!userSavedCart || userSavedCart.length === 0) && Array.isArray(action.user.cart) && action.user.cart.length > 0) {
+          userSavedCart = action.user.cart;
+        }
+
+        // Retrieve user's stored wishlist from localStorage or from server user object
+        let userSavedWishlist: string[] = [];
+        try {
+          const raw = localStorage.getItem(`soho_wishlist_${emailKey}`);
+          if (raw) userSavedWishlist = JSON.parse(raw);
+        } catch (_) {}
+
+        if ((!userSavedWishlist || userSavedWishlist.length === 0) && Array.isArray(action.user.wishlist) && action.user.wishlist.length > 0) {
+          userSavedWishlist = action.user.wishlist;
+        }
+
+        // Merge in-memory cart with user saved cart
+        const cartMap = new Map<string, CartItem>();
+        userSavedCart.forEach((item) => cartMap.set(`${item.productId}_${item.size}`, item));
+        state.cart.forEach((item) => {
+          const k = `${item.productId}_${item.size}`;
+          if (cartMap.has(k)) {
+            const cur = cartMap.get(k)!;
+            cartMap.set(k, { ...cur, quantity: Math.max(cur.quantity, item.quantity) });
+          } else {
+            cartMap.set(k, item);
+          }
+        });
+        const finalCart = Array.from(cartMap.values());
+
+        // Merge wishlist
+        const finalWishlist = Array.from(new Set([...userSavedWishlist, ...state.wishlist]));
+
+        try {
+          localStorage.setItem("soho_cart", JSON.stringify(finalCart));
+          localStorage.setItem(`soho_cart_${emailKey}`, JSON.stringify(finalCart));
+          localStorage.setItem("soho_wishlist", JSON.stringify(finalWishlist));
+          localStorage.setItem(`soho_wishlist_${emailKey}`, JSON.stringify(finalWishlist));
+        } catch (_) {}
+
+        return {
+          ...state,
+          user: action.user,
+          cart: finalCart,
+          wishlist: finalWishlist,
+        };
       } else {
         localStorage.removeItem("soho_user");
+        return { ...state, user: null };
       }
-      return { ...state, user: action.user };
+    }
     case "SET_PRODUCTS":
       return { ...state, products: action.products };
-    case "LOGOUT":
-      localStorage.removeItem("soho_user");
+    case "LOGOUT": {
+      try {
+        if (state.user?.email) {
+          const emailKey = state.user.email.toLowerCase().trim();
+          localStorage.setItem(`soho_cart_${emailKey}`, JSON.stringify(state.cart));
+          localStorage.setItem(`soho_wishlist_${emailKey}`, JSON.stringify(state.wishlist));
+        }
+        localStorage.removeItem("soho_user");
+        localStorage.removeItem("soho_cart");
+        localStorage.removeItem("soho_wishlist");
+      } catch (_) {}
       return { ...state, user: null, cart: [], wishlist: [] };
+    }
     default:
       return state;
   }
@@ -118,6 +189,54 @@ const StoreContext = createContext<{
   state: StoreState;
   dispatch: React.Dispatch<Action>;
 } | null>(null);
+
+const getInitialCart = (): CartItem[] => {
+  try {
+    const savedUser = localStorage.getItem("soho_user");
+    if (savedUser) {
+      const user = JSON.parse(savedUser);
+      if (user?.email) {
+        const userSaved = localStorage.getItem(`soho_cart_${user.email.toLowerCase().trim()}`);
+        if (userSaved) {
+          const parsed = JSON.parse(userSaved);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      }
+    }
+    const saved = localStorage.getItem("soho_cart");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) return parsed;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+};
+
+const getInitialWishlist = (): string[] => {
+  try {
+    const savedUser = localStorage.getItem("soho_user");
+    if (savedUser) {
+      const user = JSON.parse(savedUser);
+      if (user?.email) {
+        const userSaved = localStorage.getItem(`soho_wishlist_${user.email.toLowerCase().trim()}`);
+        if (userSaved) {
+          const parsed = JSON.parse(userSaved);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      }
+    }
+    const saved = localStorage.getItem("soho_wishlist");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) return parsed;
+    }
+    return [];
+  } catch {
+    return [];
+  }
+};
 
 const getInitialUser = (): User | null => {
   try {
@@ -130,12 +249,67 @@ const getInitialUser = (): User | null => {
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(reducer, {
-    cart: [],
-    wishlist: [],
+    cart: getInitialCart(),
+    wishlist: getInitialWishlist(),
     isCartOpen: false,
     user: getInitialUser(),
     products: initialProducts,
   });
+
+  // Keep localStorage and backend synced on every cart change
+  React.useEffect(() => {
+    try {
+      localStorage.setItem("soho_cart", JSON.stringify(state.cart));
+      if (state.user?.email) {
+        const emailKey = state.user.email.toLowerCase().trim();
+        localStorage.setItem(`soho_cart_${emailKey}`, JSON.stringify(state.cart));
+      }
+    } catch (_) {}
+
+    if (state.user) {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
+      const token = state.user.token || "";
+      fetch(`${apiBase}/auth/sync-cart-wishlist`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          email: state.user.email,
+          cart: state.cart
+        })
+      }).catch(() => {});
+    }
+  }, [state.cart, state.user]);
+
+  // Keep localStorage and backend synced on every wishlist change
+  React.useEffect(() => {
+    try {
+      localStorage.setItem("soho_wishlist", JSON.stringify(state.wishlist));
+      if (state.user?.email) {
+        const emailKey = state.user.email.toLowerCase().trim();
+        localStorage.setItem(`soho_wishlist_${emailKey}`, JSON.stringify(state.wishlist));
+      }
+    } catch (_) {}
+
+    if (state.user) {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
+      const token = state.user.token || "";
+      fetch(`${apiBase}/auth/sync-cart-wishlist`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          email: state.user.email,
+          wishlist: state.wishlist
+        })
+      }).catch(() => {});
+    }
+  }, [state.wishlist, state.user]);
+
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
       {children}

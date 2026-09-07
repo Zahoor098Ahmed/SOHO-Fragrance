@@ -62,7 +62,7 @@ export default function AdminDashboard() {
   const stats = [
     { label: "Total Users", value: statsData ? statsData.totalUsers : 0, change: "Registered (0 orders)", color: "text-blue-600" },
     { label: "Total Customers", value: statsData ? statsData.totalCustomers : 0, change: "Clients (>= 1 order)", color: "text-green-600" },
-    { label: "New Users Today", value: statsData ? statsData.newUsersToday : 0, change: "Registered today", color: "text-purple-600" },
+    { label: "Repeat Customers", value: statsData ? statsData.repeatCustomersCount : 0, change: statsData ? `${statsData.repeatRate}% retention (${statsData.repeatOrdersCount} orders)` : ">= 2 orders", color: "text-amber-700" },
     { label: "New Customers Today", value: statsData ? statsData.newCustomersToday : 0, change: "Converted today", color: "text-emerald-600" },
     { label: "Orders Today", value: statsData ? statsData.ordersToday : 0, change: "Placed in last 24h", color: "text-champagne" },
     { label: "Active Orders", value: statsData ? statsData.activeOrders : 0, change: "In delivery pipeline", color: "text-yellow-600" },
