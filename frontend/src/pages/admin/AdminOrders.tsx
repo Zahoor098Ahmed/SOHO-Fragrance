@@ -34,6 +34,7 @@ interface OrderType {
   city: string;
   address?: string;
   province?: string;
+  deliveryCharge?: number;
   verifiedBy?: string;
   verifiedAt?: string;
 }
@@ -125,7 +126,7 @@ export default function AdminOrders() {
   const [localOrders, setLocalOrders] = useState<OrderType[]>([]);
   const [filter, setFilter] = useState("All");
   const [currentPage, setCurrentPage] = useState(1);
-  const ordersPerPage = 10;
+  const ordersPerPage = 5;
   const [selectedCourier, setSelectedCourier] = useState("TCS Express");
   const [selected, setSelected] = useState<OrderType | null>(null);
   const [printOrder, setPrintOrder] = useState<OrderType | null>(null);
@@ -647,6 +648,12 @@ export default function AdminOrders() {
               <div className="flex justify-between"><span className="text-muted-text">Delivery Address</span><span className="text-dark-text text-right max-w-xs">{selected.address ? `${selected.address}, ` : ""}{selected.city}</span></div>
               <div className="flex justify-between"><span className="text-muted-text">Items</span><span className="text-dark-text text-right max-w-xs font-medium">{selected.items}</span></div>
               <div className="flex justify-between"><span className="text-muted-text">Payment Method</span><span className="text-dark-text font-medium">{selected.payment}</span></div>
+              <div className="flex justify-between">
+                <span className="text-muted-text">Delivery Charge</span>
+                <span className="text-dark-text font-mono font-medium">
+                  {selected.deliveryCharge && selected.deliveryCharge > 0 ? formatPKR(selected.deliveryCharge) : "Free / Included"}
+                </span>
+              </div>
               <div className="flex justify-between"><span className="text-muted-text">Total Amount</span><span className="font-mono-custom text-burgundy font-bold text-sm">{formatPKR(selected.amount)}</span></div>
             </div>
 
@@ -733,7 +740,7 @@ export default function AdminOrders() {
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2">
                       <span className="text-2xl font-black tracking-wider uppercase font-serif text-black leading-none">
-                        SOHO PERFUME
+                        SOHO Fragrance
                       </span>
                       <span className="border border-black text-[9px] font-mono font-bold px-1.5 py-0.2 uppercase tracking-wider bg-gray-100">
                         Official Store
@@ -743,7 +750,7 @@ export default function AdminOrders() {
                       Luxury Fragrance Logistics & Airway Bill
                     </div>
                     <div className="text-[10px] font-mono text-black font-semibold">
-                      Store: www.sohoperfume.com · UAN: +92 300 1234567 · NTN: 8942105-3
+                      Store: www.sohofragrance.com · UAN: +92 300 1234567 · NTN: 8942105-3
                     </div>
                   </div>
 
@@ -801,11 +808,11 @@ export default function AdminOrders() {
                     </span>
                     <span className="text-[9px] font-mono text-gray-500 uppercase">Karachi Hub</span>
                   </div>
-                  <p className="text-sm font-black text-black">SOHO PERFUME (PVT) LTD.</p>
+                  <p className="text-sm font-black text-black">SOHO Fragrance (PVT) LTD.</p>
                   <p className="text-xs text-gray-800">Dispatch Atelier: Suite 402, Clifton Luxury Towers, Karachi</p>
-                  <p className="text-xs font-mono font-bold text-black">Web: www.sohoperfume.com</p>
+                  <p className="text-xs font-mono font-bold text-black">Web: www.sohofragrance.com</p>
                   <p className="text-xs font-mono text-black">Support: +92 300 1234567</p>
-                  <p className="text-xs font-mono text-gray-700">Email: care@sohoperfume.com</p>
+                  <p className="text-xs font-mono text-gray-700">Email: care@sohofragrance.com</p>
                   <p className="text-[10px] text-gray-600 mt-2 italic">
                     Return Note: If undelivered, return immediately to Karachi Dispatch Fulfillment Center.
                   </p>
@@ -901,7 +908,7 @@ export default function AdminOrders() {
                   </div>
                   <div className="text-[10px] font-mono text-gray-700 leading-tight space-y-0.5">
                     <p>· <strong>Rider Instruction:</strong> Contact consignee prior to delivery. Open-box inspection strictly not allowed prior to COD payment.</p>
-                    <p>· <strong>Customer Support:</strong> For queries, contact <strong>+92 300 1234567</strong> or <strong>care@sohoperfume.com</strong>.</p>
+                    <p>· <strong>Customer Support:</strong> For queries, contact <strong>+92 300 1234567</strong> or <strong>care@sohofragrance.com</strong>.</p>
                   </div>
                 </div>
 
@@ -929,8 +936,8 @@ export default function AdminOrders() {
 
               {/* Corporate Footer */}
               <div className="pt-2 border-t border-black flex items-center justify-between text-[9px] font-mono text-gray-600 px-1 pb-1">
-                <span>SOHO PERFUME OFFICIAL DELIVERY MANIFEST · AUTHENTICITY GUARANTEED</span>
-                <span>OFFICIAL STORE: WWW.SOHOPERFUME.COM · HELPLINE: 0300-1234567</span>
+                <span>SOHO Fragrance OFFICIAL DELIVERY MANIFEST · AUTHENTICITY GUARANTEED</span>
+                <span>OFFICIAL STORE: WWW.SOHOFRAGRANCE.COM · HELPLINE: 0300-1234567</span>
               </div>
             </div>
           </div>

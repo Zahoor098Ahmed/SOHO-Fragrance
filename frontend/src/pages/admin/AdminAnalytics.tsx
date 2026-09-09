@@ -429,7 +429,7 @@ export default function AdminAnalytics() {
             <div className="bg-white p-6 border border-cream rounded-sm space-y-4 shadow-xs">
               <div className="flex items-center justify-between border-b border-cream/50 pb-3">
                 <h3 className="font-semibold text-dark-text tracking-wide">Best Performing Fragrances</h3>
-                <span className="text-[11px] text-muted-text">By units sold in this period</span>
+                <span className="text-[11px] text-muted-text">By bottles sold</span>
               </div>
               <div className="space-y-3">
                 {data.bestFragrances.length === 0 ? (
@@ -449,7 +449,7 @@ export default function AdminAnalytics() {
                         <div>
                           <div className="font-semibold font-display text-dark-text">{p.name}</div>
                           <div className="text-[11px] text-muted-text font-mono">
-                            {p.sales} {p.sales === 1 ? "unit" : "units"} sold
+                            {p.sales.toLocaleString()} {p.sales === 1 ? "bottle" : "bottles"} sold
                           </div>
                         </div>
                       </div>
@@ -466,7 +466,7 @@ export default function AdminAnalytics() {
             <div className="bg-white p-6 border border-cream rounded-sm space-y-4 shadow-xs">
               <div className="flex items-center justify-between border-b border-cream/50 pb-3">
                 <h3 className="font-semibold text-dark-text tracking-wide">Audience Demographics</h3>
-                <span className="text-[11px] text-muted-text">Based on order product types</span>
+                <span className="text-[11px] text-muted-text">Based on fragrance collection sales</span>
               </div>
               <div className="space-y-4">
                 {data.demographics.map((d, idx) => (

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate } from "react-router";
-import { getProductBySlug, products, formatPKR } from "../data/products";
+import { getProductBySlug, products, formatPKR, Product } from "../data/products";
 import { useStore } from "../store/store";
 import { useBrandStats } from "../context/BrandStatsContext";
 import BottleVisual from "../components/BottleVisual";
@@ -8,8 +8,8 @@ import ProductCard from "../components/ProductCard";
 
 export default function ProductDetail() {
   const { slug } = useParams<{ slug: string }>();
-  const product = getProductBySlug(slug || "");
   const { state, dispatch } = useStore();
+  const product = ((state.products && state.products.find((p: any) => p.slug === slug || p.id === slug)) || getProductBySlug(slug || "")) as Product | undefined;
   const { getBottlesSoldForProduct } = useBrandStats();
   const navigate = useNavigate();
 
@@ -73,7 +73,8 @@ export default function ProductDetail() {
   const currentStock = size === "50ml" ? product.stock50ml : product.stock100ml;
   const isOutOfStock = currentStock <= 0;
 
-  const related = products.filter((p) => p.id !== product.id && (p.family === product.family || p.tags.some((t) => product.tags.includes(t)))).slice(0, 4);
+  const currentCatalog = (state.products && state.products.length > 0 ? state.products : products);
+  const related = currentCatalog.filter((p) => p.id !== product.id && (p.family === product.family || p.tags?.some((t: string) => product.tags?.includes(t)))).slice(0, 4);
 
   const handleAddToCart = () => {
     if (!state.user) {
@@ -91,6 +92,7 @@ export default function ProductDetail() {
         price,
         image: product.image,
         quantity: qty,
+        deliveryCharge: product.deliveryCharge ?? 0,
       },
     });
   };
@@ -303,7 +305,7 @@ export default function ProductDetail() {
                   <h3 className="font-display text-lg text-dark-text mb-1">{tier.label}</h3>
                   <p className="text-[10px] text-muted-text tracking-wider mb-4">{tier.desc}</p>
                   <ul className="space-y-2">
-                    {tier.notes.map((n) => (
+                    {tier.notes.map((n: string) => (
                       <li key={n} className="text-sm text-dark-text flex items-center gap-2">
                         <div className="w-1 h-1 rounded-full bg-champagne" />
                         {n}

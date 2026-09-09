@@ -5,10 +5,34 @@ import { useStore, cartCount } from "../store/store";
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [banner, setBanner] = useState<{ message: string; link?: string; bgColor?: string; textColor?: string; isActive?: boolean } | null>(null);
   const { state, dispatch } = useStore();
   const count = cartCount(state.cart);
   const location = useLocation();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const fetchBanner = async () => {
+      try {
+        const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
+        const res = await fetch(`${apiBase}/banners/active`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.isActive) {
+            setBanner(data);
+          }
+        }
+      } catch (err) {
+        // Fallback banner if backend temporarily offline
+        setBanner({
+          message: "Complimentary nationwide delivery on orders above Rs. 5,000 | Handcrafted in Pakistan",
+          link: "/collection",
+          isActive: true
+        });
+      }
+    };
+    fetchBanner();
+  }, []);
 
   const isDark =
     location.pathname === "/" ||
@@ -58,6 +82,23 @@ export default function Navbar() {
         role="navigation"
         aria-label="Main navigation"
       >
+        {banner && banner.isActive && !location.pathname.startsWith("/admin") && !location.pathname.startsWith("/superadmin") && (
+          <aside
+            style={{
+              backgroundColor: banner.bgColor || "#1A1008",
+              color: banner.textColor || "#E8D8C8",
+            }}
+            className="py-1.5 px-4 text-center text-[10px] sm:text-xs tracking-[0.15em] uppercase font-medium flex items-center justify-center gap-2 border-b border-champagne/15"
+            aria-label="Announcement"
+          >
+            <span>{banner.message}</span>
+            {banner.link && (
+              <Link to={banner.link} className="underline underline-offset-2 hover:opacity-80 font-bold ml-1">
+                Explore →
+              </Link>
+            )}
+          </aside>
+        )}
         <div className="max-w-7xl mx-auto px-6 lg:px-10 h-16 flex items-center justify-between">
           {/* Logo */}
           <Link to="/" className={`font-display font-semibold ${logoColor} transition-colors duration-300`} aria-label="SOHO Fragrance home">

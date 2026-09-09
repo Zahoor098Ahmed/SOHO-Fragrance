@@ -20,8 +20,8 @@ export default function Login() {
 
   const mockUsers: Record<string, { name: string; role: "user" | "admin" | "superadmin"; pass: string }> = {
     "user@soho.com": { name: "Ali Akber", role: "user", pass: "user123" },
-    "admin@soho.com": { name: "Fatima Shah (Admin)", role: "admin", pass: "admin123" },
-    "superadmin@soho.com": { name: "Kamran Khan (Owner)", role: "superadmin", pass: "super123" },
+    "admin@soho.com": { name: "Admin", role: "admin", pass: "admin123" },
+    "superadmin@soho.com": { name: "Super Admin", role: "superadmin", pass: "super123" },
   };
 
   const [forgotPassword, setForgotPassword] = useState(false);

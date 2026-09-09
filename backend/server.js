@@ -7,60 +7,111 @@ import rateLimit from "express-rate-limit";
 import bcrypt from "bcryptjs";
 import path from "path";
 import fs from "fs";
-import router from "./routes.js";
-import { User, Product, Config, Order, Review } from "./models.js";
+import router, { syncBrandStatsCollection } from "./routes.js";
+import { User, Product, Config, Order, Review, Coupon, AuditLog, Subscriber, Shipment, Banner, BrandStat } from "./models.js";
 
 dotenv.config();
 
 const app = express();
+const isVercel = Boolean(process.env.VERCEL);
 
-// Ensure upload directory exists for payment receipts
-const uploadDir = path.join(process.cwd(), "uploads", "receipts");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+// Ensure upload directory exists for payment receipts (uses /tmp on Vercel)
+const uploadDir = isVercel ? path.join("/tmp", "uploads", "receipts") : path.join(process.cwd(), "uploads", "receipts");
+try {
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+} catch (e) {
+  console.warn("Upload dir creation warning (serverless):", e.message);
 }
 
 // 1. High Security Middlewares
-// Allow cross-origin resource sharing for static uploaded images while keeping other secure headers
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
 // Serve uploaded receipts statically
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+app.use("/uploads", express.static(uploadDir));
 
-// CORS configuration - Only allow frontend origin access
+// CORS configuration - Allow localhost, *.vercel.app, and custom domains
 app.use(cors({
-  origin: [
-    "http://localhost:5173", "http://127.0.0.1:5173",
-    "http://localhost:3000", "http://127.0.0.1:3000",
-    "http://localhost:8443", "http://127.0.0.1:8443"
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  origin: (origin, callback) => {
+    if (!origin || 
+        origin.includes("localhost") || 
+        origin.includes("127.0.0.1") || 
+        origin.endsWith(".vercel.app") ||
+        origin.includes("soho")) {
+      return callback(null, true);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 // Express Rate Limiter - Prevent DDoS / Brute Force
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 300, // Limit each IP to 300 requests per window
+  max: 5000, // Generous limit for high-frequency admin / store requests
   message: "Too many requests from this IP, please try again after 15 minutes."
 });
 app.use("/api", apiLimiter);
 
-// Parse JSON with limit (prevent huge payload DOS attacks)
-app.use(express.json({ limit: "10mb" }));
+// Parse JSON with limit (supports high-res image uploads from admin panel)
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// 2. Database Connection
-const mongoURI = process.env.MONGODB_URI || "mongodb://localhost:27017/soho_fragrance";
-mongoose.connect(mongoURI)
-  .then(async () => {
-    console.log("Connected to MongoDB database successfully.");
-    await seedDatabase();
-  })
-  .catch((err) => {
-    console.error("Database connection error:", err);
+// 2. Database Connection with Serverless Connection Caching
+let cachedDbPromise = null;
+let hasSeeded = false;
+
+export async function connectToDatabase() {
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
+
+  if (!cachedDbPromise) {
+    const mongoURI = process.env.MONGODB_URI || "mongodb://localhost:27017/soho_fragrance";
+    cachedDbPromise = mongoose.connect(mongoURI, {
+      bufferCommands: false,
+    }).then(async (m) => {
+      console.log("Connected to MongoDB database successfully.");
+      if (!hasSeeded) {
+        hasSeeded = true;
+        await seedDatabase();
+      }
+      return m;
+    }).catch((err) => {
+      cachedDbPromise = null;
+      console.error("MongoDB connection failed:", err);
+      throw err;
+    });
+  }
+
+  return cachedDbPromise;
+}
+
+// Middleware: Guarantee active database connection for all requests
+app.use(async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    next();
+  } catch (err) {
+    console.error("Database connection error in request:", err);
+    res.status(500).json({ error: "Database connection failed", message: err.message });
+  }
+});
+
+// Root Healthcheck
+app.get("/", (req, res) => {
+  res.json({
+    name: "SOHO Fragrance API",
+    status: "Online",
+    mode: isVercel ? "Vercel Serverless Function" : "Node.js Server",
+    database: mongoose.connection.readyState === 1 ? "Connected (Atlas)" : "Disconnected"
   });
+});
 
 // Register API Routes
 app.use("/api", router);
@@ -71,10 +122,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Internal Server Error" });
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Secured backend server running on port ${PORT}`);
-});
+// Start local server if not running in Vercel Serverless and run directly
+const isDirectRun = Boolean(process.argv[1] && (process.argv[1].endsWith("server.js") || process.argv[1].endsWith("server")));
+if (!process.env.VERCEL && isDirectRun) {
+  const PORT = process.env.PORT || 8080;
+  app.listen(PORT, () => {
+    console.log(`Secured backend server running on port ${PORT}`);
+  });
+}
+
+export default app;
 
 
 
@@ -87,8 +144,8 @@ async function seedDatabase() {
     const superadminPass = await bcrypt.hash("super123", 10);
 
     const defaultUsers = [
-      { name: "Kamran Khan (Owner)", email: "superadmin@soho.com", password: superadminPass, role: "superadmin", isVerified: true },
-      { name: "Fatima Shah (Admin)", email: "admin@soho.com", password: adminPass, role: "admin", isVerified: true },
+      { name: "Super Admin", email: "superadmin@soho.com", password: superadminPass, role: "superadmin", isVerified: true },
+      { name: "Admin", email: "admin@soho.com", password: adminPass, role: "admin", isVerified: true },
       { name: "Ali Akber", email: "user@soho.com", password: userPass, role: "user", isVerified: true },
       { name: "Ayesha Khan", email: "ayesha@example.com", password: userPass, role: "user", isVerified: true },
       { name: "Hassan Raza", email: "hassan@example.com", password: userPass, role: "user", isVerified: true },
@@ -106,6 +163,14 @@ async function seedDatabase() {
       const exists = await User.findOne({ email: u.email });
       if (!exists) {
         await User.create(u);
+      } else {
+        if (u.email === "superadmin@soho.com" && exists.name !== "Super Admin") {
+          exists.name = "Super Admin";
+          await exists.save();
+        } else if (u.email === "admin@soho.com" && exists.name !== "Admin") {
+          exists.name = "Admin";
+          await exists.save();
+        }
       }
     }
 
@@ -455,6 +520,9 @@ async function seedDatabase() {
         if (exists.bottlesSold === undefined || exists.bottlesSold === null) {
           exists.bottlesSold = initialOffsets[p.id] || 200;
         }
+        if (exists.deliveryCharge === undefined || exists.deliveryCharge === null) {
+          exists.deliveryCharge = 0;
+        }
         exists.id = p.id;
         await exists.save();
       }
@@ -481,6 +549,48 @@ async function seedDatabase() {
         { productId: "03", productName: "AURÉVON", name: "Sara A.", email: "sara@example.com", rating: 4, text: "Love the depth and complexity. Highly recommend for evening wear.", date: "Aug 22, 2026", status: "Approved" }
       ]);
     }
+
+    // 6. Seed Coupons (Promo codes for checkout)
+    const couponCount = await Coupon.countDocuments({});
+    if (couponCount === 0) {
+      console.log("Seeding initial luxury promo coupons...");
+      await Coupon.create([
+        { code: "WELCOME10", discountType: "percentage", discountValue: 10, minOrderAmount: 0, usageLimit: 1000, isActive: true },
+        { code: "SOHO500", discountType: "fixed", discountValue: 500, minOrderAmount: 5000, usageLimit: 500, isActive: true },
+        { code: "EID2026", discountType: "percentage", discountValue: 15, minOrderAmount: 8000, usageLimit: 200, isActive: true },
+      ]);
+    }
+
+    // 7. Seed Active Banners (Announcement Bar)
+    const bannerCount = await Banner.countDocuments({});
+    if (bannerCount === 0) {
+      console.log("Seeding active announcement banners...");
+      await Banner.create({
+        title: "Complimentary Delivery",
+        message: "Complimentary nationwide delivery on orders above Rs. 5,000 | Handcrafted in Pakistan",
+        link: "/collection",
+        bgColor: "#1A1008",
+        textColor: "#E8D8C8",
+        isActive: true,
+        priority: 10
+      });
+    }
+
+    // 8. Seed Audit Logs
+    const auditCount = await AuditLog.countDocuments({});
+    if (auditCount === 0) {
+      console.log("Seeding initial audit logs...");
+      await AuditLog.create([
+        { logId: "LOG-1001", action: "Updated inventory stock for VELORÉN 50ml", performedBy: "Admin", role: "Admin", targetResource: "Products", ipAddress: "192.168.1.14", time: "Aug 24, 2026, 10:15 AM" },
+        { logId: "LOG-1002", action: "Approved customer review for NOIRVÉA", performedBy: "Admin", role: "Admin", targetResource: "Reviews", ipAddress: "192.168.1.14", time: "Aug 23, 2026, 05:40 PM" },
+        { logId: "LOG-1003", action: "Dispatched order #ORD-1044 via TCS Express", performedBy: "Super Admin", role: "Super Admin", targetResource: "Orders", ipAddress: "192.168.1.1", time: "Aug 22, 2026, 03:20 PM" },
+        { logId: "LOG-1004", action: "Updated payment NayaPay credentials", performedBy: "Super Admin", role: "Super Admin", targetResource: "Settings", ipAddress: "192.168.1.1", time: "Aug 21, 2026, 11:42 AM" }
+      ]);
+    }
+
+    // 9. Synchronize Website & Store Statistics to Atlas "brandstats" Collection
+    console.log("Synchronizing store & website metrics to Atlas 'brandstats' collection...");
+    await syncBrandStatsCollection();
   } catch (err) {
     console.error("Seeding database error:", err);
   }

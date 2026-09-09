@@ -25,7 +25,7 @@ export default function Collection() {
     else if (sort === "rating") list.sort((a, b) => b.rating - a.rating);
 
     return list;
-  }, [active, sort]);
+  }, [active, sort, state.products]);
 
   return (
     <div className="min-h-screen bg-ivory pt-16">

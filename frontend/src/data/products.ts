@@ -24,6 +24,7 @@ export interface Product {
   reviews: number;
   stock50ml: number;
   stock100ml: number;
+  deliveryCharge?: number;
 }
 
 export const products: Product[] = [
@@ -337,6 +338,18 @@ export const products: Product[] = [
   },
 ];
 
+// Hydrate products from localStorage cache if available immediately
+try {
+  const cached = localStorage.getItem("soho_cached_products");
+  if (cached) {
+    const parsed = JSON.parse(cached);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      products.length = 0;
+      products.push(...parsed);
+    }
+  }
+} catch (_) {}
+
 // Dynamic REST API loader
 export async function fetchProducts(): Promise<Product[]> {
   try {
@@ -347,6 +360,10 @@ export async function fetchProducts(): Promise<Product[]> {
       if (Array.isArray(data) && data.length > 0) {
         products.length = 0;
         products.push(...data);
+        try {
+          localStorage.setItem("soho_cached_products", JSON.stringify(data));
+        } catch (_) {}
+        return data;
       }
     }
   } catch (err) {
@@ -362,10 +379,14 @@ export async function saveStoredProducts(newProducts: Product[]) {
   // Update local memory reference
   products.length = 0;
   products.push(...newProducts);
+  try {
+    localStorage.setItem("soho_cached_products", JSON.stringify(newProducts));
+  } catch (_) {}
 }
 
 export const getProductBySlug = (slug: string) =>
-  products.find((p) => p.slug === slug);
+  products.find((p) => p.slug === slug || p.id === slug);
 
 export const formatPKR = (amount: number) =>
   `₨${amount.toLocaleString("en-PK")}`;
+

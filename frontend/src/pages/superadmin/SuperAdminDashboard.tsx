@@ -3,14 +3,14 @@ import { Link } from "react-router";
 import { formatPKR } from "../../data/products";
 
 const admins = [
-  { name: "Fatima Shah (Admin)", email: "admin@soho.com", role: "Admin", modules: 5, lastLogin: "Active now", status: "Active" },
-  { name: "Kamran Khan (Owner)", email: "superadmin@soho.com", role: "Super Admin", modules: 12, lastLogin: "Active now", status: "Active" },
+  { name: "Admin", email: "admin@soho.com", role: "Admin", modules: 5, lastLogin: "Active now", status: "Active" },
+  { name: "Super Admin", email: "superadmin@soho.com", role: "Super Admin", modules: 12, lastLogin: "Active now", status: "Active" },
 ];
 
 const auditLog = [
-  { action: "Order status updated", by: "Fatima Shah (Admin)", resource: "#ORD-1044", time: "10 min ago" },
+  { action: "Order status updated", by: "Admin", resource: "#ORD-1044", time: "10 min ago" },
   { action: "Database parameters seeded", by: "System Autopilot", resource: "Configuration Initialized", time: "2 hours ago" },
-  { action: "SMTP configurations loaded", by: "Kamran Khan (Owner)", resource: "Settings Updated", time: "5 hours ago" },
+  { action: "SMTP configurations loaded", by: "Super Admin", resource: "Settings Updated", time: "5 hours ago" },
 ];
 
 export default function SuperAdminDashboard() {

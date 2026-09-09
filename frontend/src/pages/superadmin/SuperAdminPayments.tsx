@@ -105,10 +105,10 @@ const defaultPaymentAccounts: PaymentAccountsConfig = {
     instructions: "Send money via Easypaisa App or dial *786# to this mobile account. Upload transaction receipt below."
   },
   nayapay: {
-    accountTitle: "SOHO Fragrance Pvt Ltd",
-    accountNumber: "0300-1234567",
+    accountTitle: "",
+    accountNumber: "",
     nayapayId: "",
-    instructions: "Transfer via NayaPay app to our registered mobile account and upload transaction receipt."
+    instructions: "Transfer via NayaPay app to our registered mobile account or NayaPay ID and upload transaction receipt."
   },
   sadapay: {
     accountTitle: "SOHO Fragrance Pvt Ltd",
@@ -242,19 +242,36 @@ export default function SuperAdminPayments() {
       }
 
       // 2. Load payment accounts config
+      let nayapayIdOverride = "";
+      try {
+        const npRes = await fetch(`${apiBase}/config/nayapay_id`);
+        if (npRes.ok) {
+          const npData = await npRes.json();
+          if (typeof npData === "string" && npData.trim() !== "") {
+            nayapayIdOverride = npData.trim();
+          }
+        }
+      } catch (e) {}
+
       const aRes = await fetch(`${apiBase}/config/payment_accounts`);
       if (aRes.ok) {
         const aData = await aRes.json();
         if (aData && typeof aData === "object" && aData.bank) {
+          const finalNayapayId = nayapayIdOverride || aData.nayapay?.nayapayId || "";
           setAccounts({
             bank: { ...defaultPaymentAccounts.bank, ...aData.bank },
             jazzcash: { ...defaultPaymentAccounts.jazzcash, ...aData.jazzcash },
             easypaisa: { ...defaultPaymentAccounts.easypaisa, ...aData.easypaisa },
-            nayapay: { ...defaultPaymentAccounts.nayapay, ...aData.nayapay },
+            nayapay: { ...defaultPaymentAccounts.nayapay, ...aData.nayapay, nayapayId: finalNayapayId },
             sadapay: { ...defaultPaymentAccounts.sadapay, ...aData.sadapay },
             raast: { ...defaultPaymentAccounts.raast, ...aData.raast },
           });
         }
+      } else if (nayapayIdOverride) {
+        setAccounts(prev => ({
+          ...prev,
+          nayapay: { ...prev.nayapay, nayapayId: nayapayIdOverride }
+        }));
       }
     } catch (err) {
       console.error("Error loading payment accounts:", err);
@@ -308,6 +325,18 @@ export default function SuperAdminPayments() {
       if (!res.ok) {
         const errData = await res.json();
         throw new Error(errData.error || "Failed to save payment accounts");
+      }
+
+      // Explicitly persist nayapay_id in Config collection
+      if (accounts.nayapay?.nayapayId !== undefined) {
+        await fetch(`${apiBase}/config/nayapay_id`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          },
+          body: JSON.stringify({ value: accounts.nayapay.nayapayId.trim() })
+        });
       }
 
       const activeOption = paymentMethodOptions.find(o => o.value === selectedMethod);
@@ -797,7 +826,7 @@ export default function SuperAdminPayments() {
                           type="text"
                           value={accounts.nayapay.nayapayId || ""}
                           onChange={(e) => handleWalletChange("nayapay", "nayapayId", e.target.value.replace(/^@/, "").trim())}
-                          placeholder="e.g. yourtag (leave blank to hide ID from customer checkout)"
+                          placeholder="Enter NayaPay ID (leave blank to hide ID from customer checkout)"
                           className="w-full text-sm font-mono px-3.5 py-2.5 border border-cream rounded-r-sm focus:outline-none focus:border-champagne bg-white text-dark-text"
                         />
                       </div>

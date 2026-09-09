@@ -119,6 +119,41 @@ export default function TrackOrder() {
               </div>
             </div>
 
+            {/* Courier & Consignment Details Banner */}
+            {(trackingInfo.courierName || trackingInfo.trackingNumber) && (
+              <div className="mb-8 p-4 bg-champagne/10 border border-champagne/30 rounded-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-burgundy/10 flex items-center justify-center text-burgundy font-bold text-sm">
+                    📦
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase tracking-widest text-muted-text font-bold block">
+                      Courier Logistics Partner
+                    </span>
+                    <span className="text-sm font-semibold text-dark-text">
+                      {trackingInfo.courierName || "Express Courier"}
+                    </span>
+                    {trackingInfo.trackingNumber && (
+                      <span className="text-xs text-burgundy font-mono-custom font-medium block">
+                        Consignment #{trackingInfo.trackingNumber}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {trackingInfo.trackingUrl && (
+                  <a
+                    href={trackingInfo.trackingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="self-start sm:self-auto px-4 py-2 bg-burgundy hover:bg-espresso text-cream text-xs font-semibold uppercase tracking-wider rounded-sm transition-colors cursor-pointer"
+                  >
+                    Open Courier Portal →
+                  </a>
+                )}
+              </div>
+            )}
+
             {/* Cancelled Notice Banner if applicable */}
             {trackingInfo.status === "Cancelled" && (
               <div className="mb-8 p-4 bg-red-50 border border-red-200 text-red-800 text-xs rounded-sm">

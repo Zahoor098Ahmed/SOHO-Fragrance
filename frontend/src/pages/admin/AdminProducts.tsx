@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { products, saveStoredProducts, formatPKR } from "../../data/products";
+import { useState, useEffect } from "react";
+import { products, saveStoredProducts, formatPKR, fetchProducts } from "../../data/products";
 import type { Product } from "../../data/products";
 import { useBrandStats } from "../../context/BrandStatsContext";
+import { useStore } from "../../store/store";
 
 // A few preset premium perfume images from Unsplash for easy selection, or they can input their own URL
 const PRESET_IMAGES = [
@@ -16,9 +17,34 @@ const PRESET_IMAGES = [
 ];
 
 export default function AdminProducts() {
+  const { dispatch } = useStore();
   const [localProducts, setLocalProducts] = useState<Product[]>([...products]);
   const [search, setSearch] = useState("");
   const { getBottlesSoldForProduct } = useBrandStats();
+
+  const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
+
+  const loadData = async () => {
+    try {
+      const res = await fetch(`${apiBase}/products`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setLocalProducts(data);
+          saveStoredProducts(data);
+          dispatch({ type: "SET_PRODUCTS", products: data });
+          return;
+        }
+      }
+    } catch (e) {}
+    const p = await fetchProducts();
+    setLocalProducts([...p]);
+    dispatch({ type: "SET_PRODUCTS", products: p });
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
 
   // Modal state: null means closed, active product means editing/adding
   const [modalOpen, setModalOpen] = useState(false);
@@ -33,6 +59,7 @@ export default function AdminProducts() {
     price100ml: 7500,
     stock50ml: 50,
     stock100ml: 50,
+    deliveryCharge: 0,
     image: PRESET_IMAGES[0],
     gender: "unisex",
     topNotes: [],
@@ -63,6 +90,7 @@ export default function AdminProducts() {
       price100ml: 7500,
       stock50ml: 50,
       stock100ml: 50,
+      deliveryCharge: 0,
       image: PRESET_IMAGES[0],
       gender: "unisex",
       topNotes: ["Bergamot", "Lemon"],
@@ -85,11 +113,14 @@ export default function AdminProducts() {
 
   const handleOpenEdit = (product: Product) => {
     setIsEditing(true);
-    setFormData({ ...product });
+    setFormData({
+      deliveryCharge: 0,
+      ...product
+    });
     setModalOpen(true);
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     let updatedList: Product[] = [];
 
@@ -103,24 +134,78 @@ export default function AdminProducts() {
       price100ml: Number(formData.price100ml) || 0,
       stock50ml: Number(formData.stock50ml) || 0,
       stock100ml: Number(formData.stock100ml) || 0,
+      deliveryCharge: Math.max(0, Number(formData.deliveryCharge) || 0),
     };
 
-    if (isEditing) {
-      updatedList = localProducts.map((p) => (p.id === finalProduct.id ? finalProduct : p));
-    } else {
-      updatedList = [...localProducts, finalProduct];
+    const userStr = localStorage.getItem("soho_user");
+    const token = userStr ? JSON.parse(userStr).token : "";
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json"
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    try {
+      if (isEditing) {
+        const targetId = (formData as any)._id || finalProduct.id;
+        const res = await fetch(`${apiBase}/products/${targetId}`, {
+          method: "PUT",
+          headers,
+          body: JSON.stringify(finalProduct)
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          updatedList = localProducts.map((p) => (p.id === finalProduct.id || (p as any)._id === targetId ? saved : p));
+        } else {
+          updatedList = localProducts.map((p) => (p.id === finalProduct.id ? finalProduct : p));
+        }
+      } else {
+        const res = await fetch(`${apiBase}/products`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(finalProduct)
+        });
+        if (res.ok) {
+          const saved = await res.json();
+          updatedList = [...localProducts, saved];
+        } else {
+          updatedList = [...localProducts, finalProduct];
+        }
+      }
+    } catch (err) {
+      console.error("Failed to sync product with database:", err);
+      if (isEditing) {
+        updatedList = localProducts.map((p) => (p.id === finalProduct.id ? finalProduct : p));
+      } else {
+        updatedList = [...localProducts, finalProduct];
+      }
     }
 
     saveStoredProducts(updatedList);
     setLocalProducts(updatedList);
+    dispatch({ type: "SET_PRODUCTS", products: updatedList });
     setModalOpen(false);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (window.confirm("Are you sure you want to delete this product?")) {
+      const userStr = localStorage.getItem("soho_user");
+      const token = userStr ? JSON.parse(userStr).token : "";
+      const target = localProducts.find((p) => p.id === id);
+      const targetId = (target as any)?._id || id;
+
+      try {
+        await fetch(`${apiBase}/products/${targetId}`, {
+          method: "DELETE",
+          headers: token ? { "Authorization": `Bearer ${token}` } : {}
+        });
+      } catch (err) {
+        console.error("Failed to delete product from database:", err);
+      }
+
       const updatedList = localProducts.filter((p) => p.id !== id);
       saveStoredProducts(updatedList);
       setLocalProducts(updatedList);
+      dispatch({ type: "SET_PRODUCTS", products: updatedList });
     }
   };
 
@@ -163,6 +248,7 @@ export default function AdminProducts() {
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider hidden md:table-cell">Family</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">50ml</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">100ml</th>
+                <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">Delivery Charge</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider hidden lg:table-cell">Stock</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">Bottles Sold</th>
                 <th className="text-left px-5 py-3 text-xs text-muted-text font-normal tracking-wider">Status</th>
@@ -186,6 +272,13 @@ export default function AdminProducts() {
                     <td className="px-5 py-3 hidden md:table-cell text-muted-text text-xs">{p.family}</td>
                     <td className="px-5 py-3 font-mono-custom text-dark-text text-xs">{formatPKR(p.price50ml)}</td>
                     <td className="px-5 py-3 font-mono-custom text-dark-text text-xs">{formatPKR(p.price100ml)}</td>
+                    <td className="px-5 py-3 font-mono-custom text-dark-text text-xs">
+                      {p.deliveryCharge && p.deliveryCharge > 0 ? (
+                        <span className="text-burgundy font-medium">{formatPKR(p.deliveryCharge)}</span>
+                      ) : (
+                        <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] font-sans">Standard</span>
+                      )}
+                    </td>
                     <td className="px-5 py-3 hidden lg:table-cell text-xs text-muted-text">{p.stock50ml} / {p.stock100ml}</td>
                     <td className="px-5 py-3">
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm bg-espresso text-champagne text-[11px] font-mono font-semibold border border-champagne/30">
@@ -262,7 +355,7 @@ export default function AdminProducts() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="text-xs text-muted-text tracking-wider uppercase mb-1 block">Price 50ml (PKR)</label>
                   <input
@@ -280,6 +373,17 @@ export default function AdminProducts() {
                     type="number"
                     value={formData.price100ml}
                     onChange={(e) => setFormData({ ...formData, price100ml: Number(e.target.value) })}
+                    className="w-full px-3 py-2 border border-cream text-sm text-dark-text focus:outline-none focus:border-champagne rounded-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-text tracking-wider uppercase mb-1 block">Delivery Charge (PKR)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0 = Standard"
+                    value={formData.deliveryCharge ?? 0}
+                    onChange={(e) => setFormData({ ...formData, deliveryCharge: Math.max(0, Number(e.target.value) || 0) })}
                     className="w-full px-3 py-2 border border-cream text-sm text-dark-text focus:outline-none focus:border-champagne rounded-sm"
                   />
                 </div>

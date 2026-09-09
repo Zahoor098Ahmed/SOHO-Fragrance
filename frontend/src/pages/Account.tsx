@@ -41,8 +41,14 @@ export default function Account() {
     }
   }, [userOrders.length, totalOrderPages, orderPage]);
 
+  const resolveProfileName = (role?: string, email?: string, name?: string) => {
+    if (role === "superadmin" || email === "superadmin@soho.com") return "Super Admin";
+    if (role === "admin" || email === "admin@soho.com") return "Admin";
+    return name || "Guest User";
+  };
+
   const [userProfile, setUserProfile] = useState({
-    name: state.user?.name || "Guest User",
+    name: resolveProfileName(state.user?.role, state.user?.email, state.user?.name),
     email: state.user?.email || "guest@soho.com",
     phone: "+92 300 1234567",
     newsletter: true,
@@ -76,8 +82,8 @@ export default function Account() {
       if (res.ok) {
         const data = await res.json();
         setUserProfile({
-          name: data.name || state.user.name,
-          email: data.email || state.user.email,
+          name: resolveProfileName(data.role || state.user?.role, data.email || state.user?.email, data.name || state.user?.name),
+          email: data.email || state.user?.email,
           phone: data.phone || "+92 300 1234567",
           newsletter: true
         });
@@ -96,14 +102,14 @@ export default function Account() {
         // Fallback for mock/test users
         setUserProfile((p) => ({
           ...p,
-          name: state.user?.name || "Guest User",
+          name: resolveProfileName(state.user?.role, state.user?.email, state.user?.name),
           email: state.user?.email || "guest@soho.com"
         }));
       }
     } catch (err) {
       setUserProfile((p) => ({
         ...p,
-        name: state.user?.name || "Guest User",
+        name: resolveProfileName(state.user?.role, state.user?.email, state.user?.name),
         email: state.user?.email || "guest@soho.com"
       }));
     }
@@ -236,7 +242,7 @@ export default function Account() {
         <div className="text-center mb-12">
           <p className="text-xs tracking-[0.4em] text-champagne/60 uppercase mb-3">Maison SOHO</p>
           <h1 className="font-display text-4xl lg:text-5xl text-dark-text font-light">My Account</h1>
-          <p className="text-muted-text text-sm mt-2">Welcome back, {storeUser.name}</p>
+          <p className="text-muted-text text-sm mt-2">Welcome back, {resolveProfileName(storeUser.role, storeUser.email, storeUser.name)}</p>
         </div>
 
         {/* Layout */}

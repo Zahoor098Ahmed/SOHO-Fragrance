@@ -259,8 +259,7 @@ export default function SuperAdminAdmins() {
                   required
                   type="password"
                   value={newAdmin.password}
-                  onChange={(e) => setNewAdmin({ ...newAdmin, password: e.target.value })}
-                  className="w-full px-3 py-2 border border-cream text-sm text-dark-text focus:outline-none focus:border-champagne rounded-sm"
+                  onChange={(e) => setNewAdmin({ ...newAdmin, password: e.target.value })}                 className="w-full px-3 py-2 border border-cream text-sm text-dark-text focus:outline-none focus:border-champagne rounded-sm"
                 />
               </div>
 

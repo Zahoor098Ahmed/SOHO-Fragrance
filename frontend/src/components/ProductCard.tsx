@@ -33,6 +33,7 @@ export default function ProductCard({ product, variant = "light" }: Props) {
         price: product.price50ml,
         image: product.image,
         quantity: 1,
+        deliveryCharge: product.deliveryCharge || 0,
       },
     });
   };

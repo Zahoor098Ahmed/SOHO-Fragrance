@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer } from "react";
-import { products as initialProducts } from "../data/products";
+import { products as initialProducts, fetchProducts } from "../data/products";
 
 export interface CartItem {
   productId: string;
@@ -9,6 +9,7 @@ export interface CartItem {
   price: number;
   image: string;
   quantity: number;
+  deliveryCharge?: number;
 }
 
 export interface User {
@@ -54,7 +55,7 @@ function reducer(state: StoreState, action: Action): StoreState {
           isCartOpen: true,
           cart: state.cart.map((i) =>
             i.productId === action.item.productId && i.size === action.item.size
-              ? { ...i, quantity: i.quantity + 1 }
+              ? { ...i, quantity: i.quantity + 1, deliveryCharge: action.item.deliveryCharge ?? i.deliveryCharge }
               : i
           ),
         };
@@ -166,6 +167,9 @@ function reducer(state: StoreState, action: Action): StoreState {
       }
     }
     case "SET_PRODUCTS":
+      try {
+        localStorage.setItem("soho_cached_products", JSON.stringify(action.products));
+      } catch (_) {}
       return { ...state, products: action.products };
     case "LOGOUT": {
       try {
@@ -189,6 +193,17 @@ const StoreContext = createContext<{
   state: StoreState;
   dispatch: React.Dispatch<Action>;
 } | null>(null);
+
+const getInitialProducts = (): any[] => {
+  try {
+    const cached = localStorage.getItem("soho_cached_products");
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (_) {}
+  return initialProducts;
+};
 
 const getInitialCart = (): CartItem[] => {
   try {
@@ -253,8 +268,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     wishlist: getInitialWishlist(),
     isCartOpen: false,
     user: getInitialUser(),
-    products: initialProducts,
+    products: getInitialProducts(),
   });
+
+  // Sync products from REST API on mount
+  React.useEffect(() => {
+    fetchProducts().then((loaded) => {
+      if (loaded && Array.isArray(loaded) && loaded.length > 0) {
+        dispatch({ type: "SET_PRODUCTS", products: loaded });
+      }
+    });
+  }, []);
 
   // Keep localStorage and backend synced on every cart change
   React.useEffect(() => {

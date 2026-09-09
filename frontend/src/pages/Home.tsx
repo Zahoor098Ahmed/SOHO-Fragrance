@@ -11,8 +11,9 @@ export default function Home() {
   const [heroVisible, setHeroVisible] = useState(false);
   const { state, dispatch } = useStore();
   const { stats } = useBrandStats();
-  const soverane = (state.products.find((p) => p.slug === "soverane") || products.find((p) => p.slug === "soverane")!) as Product;
-  const bestSellers = state.products.filter((p) => p.isBestSeller).slice(0, 4) as Product[];
+  const allProducts = (state.products && state.products.length > 0 ? state.products : products) as Product[];
+  const soverane = (allProducts.find((p) => p.slug === "soverane") || products.find((p) => p.slug === "soverane") || products[0]) as Product;
+  const bestSellers = allProducts.filter((p) => p.isBestSeller).slice(0, 4) as Product[];
 
   useEffect(() => {
     const t = setTimeout(() => setLoaded(true), 1800);
@@ -240,7 +241,7 @@ export default function Home() {
           {/* Horizontal scroll */}
           <div className="overflow-x-auto collection-scroll -mx-6 px-6">
             <div className="flex gap-4 pb-4" style={{ width: "max-content" }}>
-              {products.map((product) => (
+              {allProducts.map((product) => (
                 <Link
                   key={product.id}
                   to={`/product/${product.slug}`}
@@ -309,7 +310,7 @@ export default function Home() {
               <button
                 onClick={() => dispatch({
                   type: "ADD_TO_CART",
-                  item: { productId: soverane.id, slug: soverane.slug, name: soverane.name, size: "100ml", price: soverane.price100ml, image: soverane.image, quantity: 1 }
+                  item: { productId: soverane.id, slug: soverane.slug, name: soverane.name, size: "100ml", price: soverane.price100ml, image: soverane.image, quantity: 1, deliveryCharge: soverane.deliveryCharge ?? 0 }
                 })}
                 className="px-8 py-3 bg-burgundy text-cream text-xs tracking-[0.3em] uppercase font-semibold hover:bg-dark-burgundy transition-colors"
               >

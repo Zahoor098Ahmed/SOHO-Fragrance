@@ -69,10 +69,10 @@ const defaultPaymentAccounts: PaymentAccounts = {
     instructions: "Send money via Easypaisa App or dial *786# to this mobile account. Upload transaction receipt below."
   },
   nayapay: {
-    accountTitle: "SOHO Fragrance Pvt Ltd",
-    accountNumber: "0300-1234567",
+    accountTitle: "",
+    accountNumber: "",
     nayapayId: "",
-    instructions: "Transfer via NayaPay app to our registered mobile account and upload transaction receipt."
+    instructions: "Transfer via NayaPay app to our registered mobile account or NayaPay ID and upload transaction receipt."
   },
   sadapay: {
     accountTitle: "SOHO Fragrance Pvt Ltd",
@@ -101,6 +101,67 @@ export default function Checkout() {
   const { state, dispatch } = useStore();
   const { refreshStats } = useBrandStats();
   const total = cartTotal(state.cart);
+
+  const [catalogProducts, setCatalogProducts] = useState<any[]>([]);
+  useEffect(() => {
+    fetchProducts().then(prods => {
+      if (Array.isArray(prods)) setCatalogProducts(prods);
+    });
+  }, []);
+
+  const getProductDeliveryCharge = (item: any) => {
+    const found = catalogProducts.find(p => p.id === item.productId || p.slug === item.slug);
+    if (found && found.deliveryCharge !== undefined) return Number(found.deliveryCharge) || 0;
+    return Number(item.deliveryCharge) || 0;
+  };
+
+  // Delivery charges: sum of custom product delivery charges if configured, or standard shipping rule
+  const customDeliveryCharge = state.cart.reduce((sum, item) => sum + (getProductDeliveryCharge(item) * item.quantity), 0);
+  const hasCustomDelivery = state.cart.some(item => getProductDeliveryCharge(item) > 0);
+  const standardShipping = total >= 5000 ? 0 : 200;
+  const effectiveDeliveryCharge = hasCustomDelivery ? customDeliveryCharge : standardShipping;
+
+  const [couponCodeInput, setCouponCodeInput] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState<any>(null);
+  const [couponError, setCouponError] = useState("");
+  const [couponLoading, setCouponLoading] = useState(false);
+
+  const discountAmount = appliedCoupon ? appliedCoupon.discountAmount : 0;
+  const grandTotal = Math.max(0, total + effectiveDeliveryCharge - discountAmount);
+
+  const handleApplyCoupon = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!couponCodeInput.trim()) return;
+    setCouponLoading(true);
+    setCouponError("");
+
+    try {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
+      const res = await fetch(`${apiBase}/coupons/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: couponCodeInput.trim(), orderAmount: total })
+      });
+      const data = await res.json();
+      if (res.ok && data.valid) {
+        setAppliedCoupon(data);
+        setCouponError("");
+      } else {
+        setCouponError(data.message || "Invalid coupon code.");
+        setAppliedCoupon(null);
+      }
+    } catch (err) {
+      setCouponError("Could not validate coupon. Please try again.");
+    } finally {
+      setCouponLoading(false);
+    }
+  };
+
+  const handleRemoveCoupon = () => {
+    setAppliedCoupon(null);
+    setCouponCodeInput("");
+    setCouponError("");
+  };
 
   const [paymentMethods, setPaymentMethods] = useState(defaultPaymentMethods);
   const [payment, setPayment] = useState("bank");
@@ -141,11 +202,22 @@ export default function Checkout() {
         if (aRes.ok) {
           const aData = await aRes.json();
           if (aData && typeof aData === "object" && aData.bank) {
+            let nayapayIdVal = aData.nayapay?.nayapayId || "";
+            try {
+              const npRes = await fetch(`${apiBase}/config/nayapay_id`);
+              if (npRes.ok) {
+                const npVal = await npRes.json();
+                if (typeof npVal === "string" && npVal.trim() !== "") {
+                  nayapayIdVal = npVal.trim();
+                }
+              }
+            } catch (e) {}
+
             setAccounts(prev => ({
               bank: { ...prev.bank, ...aData.bank },
               jazzcash: { ...prev.jazzcash, ...aData.jazzcash },
               easypaisa: { ...prev.easypaisa, ...aData.easypaisa },
-              nayapay: { ...prev.nayapay, ...aData.nayapay },
+              nayapay: { ...prev.nayapay, ...aData.nayapay, nayapayId: nayapayIdVal },
               sadapay: { ...prev.sadapay, ...aData.sadapay },
               raast: { ...prev.raast, ...aData.raast },
             }));
@@ -296,7 +368,7 @@ export default function Checkout() {
       }
 
       // 2. Place Order
-      const orderTotal = total < 5000 ? total + 200 : total;
+      const orderTotal = grandTotal;
       const itemsSummary = state.cart.map((item) => `${item.name} ${item.size} × ${item.quantity}`).join(", ");
 
       const orderData = {
@@ -306,6 +378,9 @@ export default function Checkout() {
         email: form.email.trim(),
         items: itemsSummary,
         amount: orderTotal,
+        deliveryCharge: effectiveDeliveryCharge,
+        couponCode: appliedCoupon?.code || "",
+        discountAmount: discountAmount || 0,
         payment: paymentMethods.find((p) => p.id === payment)?.label || "Bank Transfer",
         city: form.city.trim(),
         address: form.address.trim(),
@@ -857,22 +932,24 @@ export default function Checkout() {
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                           <div>
                             <p className="text-muted-text uppercase tracking-wider text-[10px]">Account Title</p>
-                            <p className="font-semibold text-dark-text text-sm">{accounts.nayapay.accountTitle || "SOHO Fragrance Pvt Ltd"}</p>
+                            <p className="font-semibold text-dark-text text-sm">{accounts.nayapay.accountTitle || "—"}</p>
                           </div>
                           
                           <div>
                             <p className="text-muted-text uppercase tracking-wider text-[10px]">Registered Mobile Number</p>
                             <div className="flex items-center gap-2">
                               <span className="font-mono-custom font-bold text-dark-text text-sm">
-                                {accounts.nayapay.accountNumber || "0300-1234567"}
+                                {accounts.nayapay.accountNumber || "—"}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => copyToClipboard((accounts.nayapay.accountNumber || "03001234567").replace(/[\s-]/g, ""), "np_num")}
-                                className="text-[10px] text-orange-700 hover:text-orange-900 underline uppercase cursor-pointer font-semibold"
-                              >
-                                {copiedKey === "np_num" ? "Copied!" : "Copy"}
-                              </button>
+                              {accounts.nayapay.accountNumber && (
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(accounts.nayapay.accountNumber.replace(/[\s-]/g, ""), "np_num")}
+                                  className="text-[10px] text-orange-700 hover:text-orange-900 underline uppercase cursor-pointer font-semibold"
+                                >
+                                  {copiedKey === "np_num" ? "Copied!" : "Copy"}
+                                </button>
+                              )}
                             </div>
                           </div>
 
@@ -1022,7 +1099,7 @@ export default function Checkout() {
                         <span>Verifying & Placing...</span>
                       </>
                     ) : (
-                      <span>Place Order · {formatPKR(total < 5000 ? total + 200 : total)}</span>
+                      <span>Place Order · {formatPKR(grandTotal)}</span>
                     )}
                   </button>
                 </div>
@@ -1040,20 +1117,83 @@ export default function Checkout() {
                   <div className="flex-1">
                     <p className="text-dark-text font-medium text-xs">{item.name}</p>
                     <p className="text-muted-text text-xs">{item.size} × {item.quantity}</p>
+                    {item.deliveryCharge && item.deliveryCharge > 0 ? (
+                      <p className="text-[10px] text-burgundy">Delivery: {formatPKR(item.deliveryCharge * item.quantity)}</p>
+                    ) : null}
                   </div>
                   <span className="font-mono-custom text-xs text-dark-text">{formatPKR(item.price * item.quantity)}</span>
                 </div>
               ))}
             </div>
-            <div className="gold-line mb-4" />
+            {/* Promo Code / Coupon Section */}
+            <div className="py-3 border-y border-cream my-3">
+              {appliedCoupon ? (
+                <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 p-2.5 rounded-sm">
+                  <div>
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-800">
+                      <span>🏷️</span>
+                      <span>{appliedCoupon.code}</span>
+                      <span className="text-[10px] bg-emerald-200 text-emerald-900 px-1.5 py-0.5 rounded-sm">
+                        {appliedCoupon.discountType === "percentage" ? `${appliedCoupon.discountValue}% OFF` : `Rs. ${appliedCoupon.discountValue} OFF`}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-emerald-700 mt-0.5">You saved {formatPKR(discountAmount)}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRemoveCoupon}
+                    className="text-xs text-rose-600 hover:text-rose-800 underline font-medium cursor-pointer"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleApplyCoupon} className="space-y-1.5">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Promo / Coupon Code"
+                      value={couponCodeInput}
+                      onChange={(e) => {
+                        setCouponCodeInput(e.target.value);
+                        setCouponError("");
+                      }}
+                      className="flex-1 bg-ivory border border-cream px-3 py-2 text-xs uppercase tracking-wider rounded-sm focus:outline-none focus:border-champagne"
+                    />
+                    <button
+                      type="submit"
+                      disabled={couponLoading || !couponCodeInput.trim()}
+                      className="px-4 py-2 bg-espresso hover:bg-burgundy text-cream text-xs uppercase tracking-wider font-semibold rounded-sm transition-colors disabled:opacity-50 cursor-pointer"
+                    >
+                      {couponLoading ? "..." : "Apply"}
+                    </button>
+                  </div>
+                  {couponError && (
+                    <p className="text-[11px] text-rose-600 font-medium">{couponError}</p>
+                  )}
+                </form>
+              )}
+            </div>
+
             <div className="space-y-2 text-sm mb-2">
               <div className="flex justify-between"><span className="text-muted-text">Subtotal</span><span className="font-mono-custom">{formatPKR(total)}</span></div>
-              <div className="flex justify-between"><span className="text-muted-text">Shipping</span><span className="text-xs text-muted-text">{total >= 5000 ? "Free" : "₨200"}</span></div>
+              {appliedCoupon && (
+                <div className="flex justify-between text-emerald-700 font-medium">
+                  <span>Discount ({appliedCoupon.code})</span>
+                  <span className="font-mono-custom">-{formatPKR(discountAmount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-muted-text">Delivery Charges</span>
+                <span className="font-mono-custom text-xs text-dark-text font-medium">
+                  {effectiveDeliveryCharge === 0 ? "Free" : formatPKR(effectiveDeliveryCharge)}
+                </span>
+              </div>
             </div>
             <div className="gold-line my-3" />
             <div className="flex justify-between font-semibold">
               <span className="font-display text-dark-text">Total</span>
-              <span className="font-mono-custom text-burgundy">{formatPKR(total < 5000 ? total + 200 : total)}</span>
+              <span className="font-mono-custom text-burgundy">{formatPKR(grandTotal)}</span>
             </div>
           </div>
         </div>

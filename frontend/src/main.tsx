@@ -32,7 +32,7 @@ localStorage.removeItem = function (key: string) {
   originalRemoveItem(key);
 };
 
-document.title = "SOHO PERFUME";
+document.title = "SOHO Fragrance";
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

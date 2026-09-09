@@ -20,7 +20,9 @@ export default function AdminLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
 
-  const userInitials = state.user ? state.user.name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2) : "A";
+  const isSuperAdmin = state.user?.role === "superadmin" || state.user?.email === "superadmin@soho.com";
+  const displayName = isSuperAdmin ? "Super Admin" : "Admin";
+  const userInitials = isSuperAdmin ? "SA" : "AD";
 
   const handleLogout = () => {
     dispatch({ type: "LOGOUT" });
@@ -98,8 +100,11 @@ export default function AdminLayout() {
           <div className="mr-2">
             <NotificationBell />
           </div>
-          <div className="w-8 h-8 rounded-full bg-burgundy flex items-center justify-center text-cream text-xs font-semibold" title={state.user?.name}>
-            {userInitials}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-full bg-burgundy flex items-center justify-center text-cream text-xs font-semibold shadow-xs" title={displayName}>
+              {userInitials}
+            </div>
+            <span className="text-xs font-semibold text-dark-text tracking-wide hidden sm:inline">{displayName}</span>
           </div>
         </header>
         <main className="flex-1 overflow-y-auto p-6">
