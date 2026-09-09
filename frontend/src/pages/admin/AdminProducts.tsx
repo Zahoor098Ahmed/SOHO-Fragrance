@@ -183,6 +183,13 @@ export default function AdminProducts() {
     saveStoredProducts(updatedList);
     setLocalProducts(updatedList);
     dispatch({ type: "SET_PRODUCTS", products: updatedList });
+    try {
+      localStorage.setItem("soho_products_sync", Date.now().toString());
+      const channel = new BroadcastChannel("soho_sync_channel");
+      channel.postMessage("products-updated");
+      channel.close();
+    } catch (_) {}
+    window.dispatchEvent(new Event("products-updated"));
     setModalOpen(false);
   };
 
@@ -206,6 +213,13 @@ export default function AdminProducts() {
       saveStoredProducts(updatedList);
       setLocalProducts(updatedList);
       dispatch({ type: "SET_PRODUCTS", products: updatedList });
+      try {
+        localStorage.setItem("soho_products_sync", Date.now().toString());
+        const channel = new BroadcastChannel("soho_sync_channel");
+        channel.postMessage("products-updated");
+        channel.close();
+      } catch (_) {}
+      window.dispatchEvent(new Event("products-updated"));
     }
   };
 

@@ -97,11 +97,48 @@ export function BrandStatsProvider({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     refreshStats();
-    // Auto-refresh every 30 seconds to capture new orders / customers live
-    const interval = setInterval(() => {
-      refreshStats();
-    }, 30000);
-    return () => clearInterval(interval);
+
+    // 1. Auto-refresh every 10 seconds to capture new orders / customers live
+    const interval = setInterval(refreshStats, 10000);
+
+    // 2. Auto-refresh when tab is focused
+    const handleFocus = () => {
+      if (!document.hidden) {
+        refreshStats();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleFocus);
+
+    // 3. Cross-tab sync
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "soho_stats_sync") {
+        refreshStats();
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel("soho_sync_channel");
+      channel.onmessage = (msg) => {
+        if (msg.data === "stats-updated") {
+          refreshStats();
+        }
+      };
+    } catch (_) {}
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleFocus);
+      window.removeEventListener("storage", handleStorage);
+      if (channel) {
+        try {
+          channel.close();
+        } catch (_) {}
+      }
+    };
   }, [refreshStats]);
 
   const updateStats = async (payload: {
@@ -129,6 +166,12 @@ export function BrandStatsProvider({ children }: { children: React.ReactNode }) 
       }
 
       await refreshStats();
+      try {
+        localStorage.setItem("soho_stats_sync", Date.now().toString());
+        const channel = new BroadcastChannel("soho_sync_channel");
+        channel.postMessage("stats-updated");
+        channel.close();
+      } catch (_) {}
       return { success: true, message: data.message || "Brand statistics updated successfully." };
     } catch (err: any) {
       return { success: false, error: err.message || "Network error while saving brand stats." };

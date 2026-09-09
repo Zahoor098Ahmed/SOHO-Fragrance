@@ -114,7 +114,7 @@ export default function ProductDetail() {
       <section className="max-w-7xl mx-auto px-6 lg:px-10 pb-20">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-start">
           {/* Visuals */}
-          <div className="sticky top-24">
+          <div className="relative lg:sticky lg:top-24">
             <div className="aspect-square rounded-sm overflow-hidden relative flex items-center justify-center bg-white border border-cream">
               <img
                 src={product.image}

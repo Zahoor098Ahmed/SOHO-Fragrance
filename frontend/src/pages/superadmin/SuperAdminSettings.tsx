@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import AnnouncementBannerSettings from "../../components/AnnouncementBannerSettings";
 
 interface SmtpAccount {
   _id: string;
@@ -8,7 +9,26 @@ interface SmtpAccount {
   pass: string;
 }
 
+interface AdminCredential {
+  _id: string;
+  name: string;
+  email: string;
+  role: "superadmin" | "admin";
+  displayPassword?: string;
+  createdAt?: string;
+}
+
 export default function SuperAdminSettings() {
+  // Administrative Credentials
+  const [superAdmins, setSuperAdmins] = useState<AdminCredential[]>([]);
+  const [admins, setAdmins] = useState<AdminCredential[]>([]);
+  const [showPassMap, setShowPassMap] = useState<Record<string, boolean>>({});
+  const [targetUserModal, setTargetUserModal] = useState<AdminCredential | null>(null);
+  const [modalNewPass, setModalNewPass] = useState("");
+  const [modalConfirmPass, setModalConfirmPass] = useState("");
+  const [modalLoading, setModalLoading] = useState(false);
+  const [credMessage, setCredMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
   // Maison Settings
   const [storeName, setStoreName] = useState("SOHO Fragrance");
   const [currency, setCurrency] = useState("PKR (₨)");
@@ -61,13 +81,29 @@ export default function SuperAdminSettings() {
     }
   };
 
+  const loadCredentials = async () => {
+    try {
+      const res = await fetch(`${apiBase}/admin/credentials`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSuperAdmins(data.superAdmins || []);
+        setAdmins(data.admins || []);
+      }
+    } catch (err) {
+      console.error("Failed to load admin credentials:", err);
+    }
+  };
+
   const loadAllSettings = async () => {
     setLoading(true);
     await Promise.all([
       fetchConfig("store_name", "SOHO Fragrance", setStoreName),
       fetchConfig("currency", "PKR (₨)", setCurrency),
       fetchConfig("support_email", "support@sohofragrance.com", setSupportEmail),
-      loadSmtpAccounts()
+      loadSmtpAccounts(),
+      loadCredentials()
     ]);
     setLoading(false);
   };
@@ -75,6 +111,70 @@ export default function SuperAdminSettings() {
   useEffect(() => {
     loadAllSettings();
   }, []);
+
+  const togglePassVisibility = (id: string) => {
+    setShowPassMap(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleUpdatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUserModal) return;
+    if (modalNewPass.length < 6) {
+      setCredMessage({ type: "error", text: "Password must be at least 6 characters." });
+      return;
+    }
+    if (modalNewPass !== modalConfirmPass) {
+      setCredMessage({ type: "error", text: "Passwords do not match." });
+      return;
+    }
+    setModalLoading(true);
+    setCredMessage(null);
+    try {
+      const res = await fetch(`${apiBase}/admin/credentials/update-password`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          targetUserId: targetUserModal._id,
+          newPassword: modalNewPass
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update password.");
+      setCredMessage({ type: "success", text: data.message || "Password updated successfully." });
+      setTargetUserModal(null);
+      setModalNewPass("");
+      setModalConfirmPass("");
+      await loadCredentials();
+    } catch (err: any) {
+      setCredMessage({ type: "error", text: err.message || "Failed to update password." });
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (target: AdminCredential) => {
+    if (!confirm(`Are you sure you want to reset password for ${target.name} (${target.email})?`)) return;
+    setCredMessage(null);
+    try {
+      const res = await fetch(`${apiBase}/admin/credentials/reset-password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ targetUserId: target._id })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reset password.");
+      setCredMessage({ type: "success", text: `${data.message} New Temporary Password: ${data.newPassword}` });
+      await loadCredentials();
+    } catch (err: any) {
+      setCredMessage({ type: "error", text: err.message || "Failed to reset password." });
+    }
+  };
 
   const saveConfigKey = async (key: string, value: string) => {
     const res = await fetch(`${apiBase}/config/${key}`, {
@@ -484,8 +584,271 @@ export default function SuperAdminSettings() {
                 </ol>
               </div>
             </div>
-
           </div>
+
+          {/* Row 3: Top Announcement Bar & Promotional Banner */}
+          <div className="mt-6">
+            <AnnouncementBannerSettings />
+          </div>
+
+          {/* Row 4: Administrative Credentials & Password Management */}
+          <div className="bg-white border border-cream rounded-sm p-6 shadow-xs mt-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-cream gap-2">
+              <div>
+                <h2 className="font-display text-lg font-semibold text-dark-text flex items-center gap-2">
+                  <svg className="w-5 h-5 text-burgundy" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  Administrative Credentials & Password Management
+                </h2>
+                <p className="text-xs text-muted-text mt-0.5">
+                  View and manage login credentials for Super Admin and Administrators. Reset or update passwords instantly.
+                </p>
+              </div>
+              <button
+                onClick={loadCredentials}
+                className="text-xs text-burgundy hover:text-espresso font-semibold flex items-center gap-1 self-start sm:self-auto cursor-pointer"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Refresh Credentials
+              </button>
+            </div>
+
+            {credMessage && (
+              <div className={`mt-4 p-3 rounded-sm text-xs border ${credMessage.type === "success" ? "bg-green-50 border-green-200 text-green-800" : "bg-red-50 border-red-200 text-red-800"}`}>
+                {credMessage.text}
+              </div>
+            )}
+
+            <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6 items-start w-full">
+              {/* Left Column: Super Admin Master Account */}
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-[10px] tracking-[0.2em] uppercase font-bold text-burgundy bg-burgundy/10 px-2.5 py-1 rounded-xs">
+                    Super Admin Master Account
+                  </span>
+                </div>
+                <div className="space-y-4">
+                  {superAdmins.map((sa) => {
+                    const isVisible = !!showPassMap[sa._id];
+                    return (
+                      <div key={sa._id} className="p-5 rounded-sm border border-burgundy/20 bg-burgundy/5 flex flex-col justify-between shadow-xs">
+                        <div>
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="font-semibold text-base text-dark-text">{sa.name}</span>
+                              <div className="text-xs text-muted-text mt-0.5 font-mono">{sa.email}</div>
+                            </div>
+                            <span className="text-[10px] font-mono uppercase bg-burgundy text-cream px-2 py-0.5 rounded-xs font-semibold">Super Admin</span>
+                          </div>
+
+                          <div className="mt-4 p-3 bg-white border border-cream rounded-sm flex items-center justify-between">
+                            <div>
+                              <span className="block text-[10px] uppercase tracking-wider text-muted-text font-semibold">Current Password</span>
+                              <span className="font-mono text-base font-semibold text-burgundy">
+                                {isVisible ? (sa.displayPassword || "superadmin123@123") : "••••••••••••"}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => togglePassVisibility(sa._id)}
+                              className="text-muted-text hover:text-dark-text text-xs p-1.5 cursor-pointer flex items-center gap-1"
+                              title={isVisible ? "Hide Password" : "Show Password"}
+                            >
+                              <span className="text-[11px] text-muted-text font-sans">{isVisible ? "Hide" : "Show"}</span>
+                              {isVisible ? (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />
+                                </svg>
+                              ) : (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-5 pt-3 border-t border-cream/80 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTargetUserModal(sa);
+                              setModalNewPass("");
+                              setModalConfirmPass("");
+                              setCredMessage(null);
+                            }}
+                            className="flex-1 py-2 px-3 bg-burgundy hover:bg-espresso text-cream text-xs font-semibold rounded-sm transition-colors cursor-pointer tracking-wider uppercase"
+                          >
+                            Change Password
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleResetPassword(sa)}
+                            className="py-2 px-4 border border-burgundy/30 text-burgundy hover:bg-burgundy/10 text-xs font-semibold rounded-sm transition-colors cursor-pointer uppercase tracking-wider"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Right Column: Administrator Accounts */}
+              <div className="flex flex-col">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] tracking-[0.2em] uppercase font-bold text-dark-text bg-cream/70 px-2.5 py-1 rounded-xs">
+                    Administrator Accounts ({admins.length})
+                  </span>
+                </div>
+
+                {admins.length === 0 ? (
+                  <p className="text-xs text-muted-text italic py-8 text-center bg-ivory border border-cream rounded-sm">
+                    No regular administrator accounts registered.
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    {admins.map((adm) => {
+                      const isVisible = !!showPassMap[adm._id];
+                      return (
+                        <div key={adm._id} className="p-5 rounded-sm border border-cream bg-ivory/50 flex flex-col justify-between shadow-xs">
+                          <div>
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <span className="font-semibold text-base text-dark-text">{adm.name}</span>
+                                <div className="text-xs text-muted-text mt-0.5 font-mono">{adm.email}</div>
+                              </div>
+                              <span className="text-[10px] font-mono uppercase bg-champagne/40 text-dark-text px-2 py-0.5 rounded-xs font-semibold">Admin</span>
+                            </div>
+
+                            <div className="mt-4 p-3 bg-white border border-cream rounded-sm flex items-center justify-between">
+                              <div>
+                                <span className="block text-[10px] uppercase tracking-wider text-muted-text font-semibold">Password</span>
+                                <span className="font-mono text-base font-semibold text-dark-text">
+                                  {isVisible ? (adm.displayPassword || "admin123") : "••••••••••••"}
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => togglePassVisibility(adm._id)}
+                                className="text-muted-text hover:text-dark-text text-xs p-1.5 cursor-pointer flex items-center gap-1"
+                                title={isVisible ? "Hide Password" : "Show Password"}
+                              >
+                                <span className="text-[11px] text-muted-text font-sans">{isVisible ? "Hide" : "Show"}</span>
+                                {isVisible ? (
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />
+                                  </svg>
+                                ) : (
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                  </svg>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="mt-5 pt-3 border-t border-cream flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTargetUserModal(adm);
+                                setModalNewPass("");
+                                setModalConfirmPass("");
+                                setCredMessage(null);
+                              }}
+                              className="flex-1 py-2 px-3 bg-dark-text hover:bg-burgundy text-cream text-xs font-semibold rounded-sm transition-colors cursor-pointer uppercase tracking-wider"
+                            >
+                              Change Password
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleResetPassword(adm)}
+                              className="py-2 px-3 border border-cream text-muted-text hover:text-burgundy hover:border-burgundy text-xs font-semibold rounded-sm transition-colors cursor-pointer uppercase tracking-wider"
+                            >
+                              Reset
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Modal for Changing Password */}
+          {targetUserModal && (
+            <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+              <div className="bg-white rounded-sm border border-cream max-w-md w-full p-6 shadow-xl relative animate-in fade-in">
+                <button
+                  type="button"
+                  onClick={() => setTargetUserModal(null)}
+                  className="absolute top-4 right-4 text-muted-text hover:text-dark-text text-lg cursor-pointer"
+                >
+                  ✕
+                </button>
+                <div className="mb-4">
+                  <h3 className="font-display text-lg font-semibold text-dark-text">Change Password</h3>
+                  <p className="text-xs text-muted-text mt-1">
+                    Set a new password for <span className="font-semibold text-burgundy">{targetUserModal.name}</span> ({targetUserModal.email}).
+                  </p>
+                </div>
+
+                <form onSubmit={handleUpdatePassword} className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-muted-text mb-1">New Password (min. 6 characters)</label>
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={modalNewPass}
+                      onChange={(e) => setModalNewPass(e.target.value)}
+                      placeholder="Enter new secure password"
+                      className="w-full px-3 py-2 text-sm border border-cream focus:border-champagne bg-ivory outline-none rounded-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-muted-text mb-1">Confirm New Password</label>
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={modalConfirmPass}
+                      onChange={(e) => setModalConfirmPass(e.target.value)}
+                      placeholder="Repeat new password"
+                      className="w-full px-3 py-2 text-sm border border-cream focus:border-champagne bg-ivory outline-none rounded-sm"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setTargetUserModal(null)}
+                      className="px-4 py-2 text-xs border border-cream text-muted-text hover:text-dark-text rounded-sm cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={modalLoading}
+                      className="px-5 py-2 bg-burgundy hover:bg-espresso text-cream text-xs font-semibold rounded-sm transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {modalLoading ? "Saving..." : "Update Password"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

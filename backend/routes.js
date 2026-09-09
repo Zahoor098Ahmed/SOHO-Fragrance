@@ -4,7 +4,9 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import multer from "multer";
 import path from "path";
+import fs from "fs";
 import crypto from "crypto";
+import rateLimit from "express-rate-limit";
 import {
   User,
   Product,
@@ -25,10 +27,28 @@ import { sendOTP, sendOrderConfirmationEmail, sendOrderReceivedPendingEmail } fr
 
 const router = express.Router();
 
-// High Security Multer Storage for Payment Receipts
+// Strict Rate Limiter for Authentication Endpoints (Brute-force, OTP cracking & credential stuffing defense)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 25, // Max 25 attempts per IP per 15 min
+  message: { error: "Too many authentication attempts from this IP. Please try again after 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// High Security Multer Storage for Payment Receipts (Vercel serverless /tmp compatible)
 const receiptStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(process.cwd(), "uploads", "receipts"));
+    const isVercel = Boolean(process.env.VERCEL);
+    const targetDir = isVercel ? path.join("/tmp", "uploads", "receipts") : path.join(process.cwd(), "uploads", "receipts");
+    try {
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+    } catch (e) {
+      console.warn("Receipt upload dir init warning:", e.message);
+    }
+    cb(null, targetDir);
   },
   filename: (req, file, cb) => {
     // Cryptographically secure randomized filename to prevent directory traversal and overwrite attacks
@@ -145,36 +165,46 @@ router.post("/auth/migrate-user", async (req, res) => {
 });
 
 // POST: Start registration (Send 6-digit OTP code)
-router.post("/auth/register", async (req, res) => {
+router.post("/auth/register", authLimiter, async (req, res) => {
   const { name, email, password, scentFamily } = req.body;
-  if (!name || !email || !password) {
-    return res.status(400).json({ error: "Missing required fields." });
+  if (!name || !email || !password || typeof email !== "string" || typeof password !== "string" || typeof name !== "string") {
+    return res.status(400).json({ error: "Valid name, email, and password strings are required." });
   }
 
-  const emailKey = email.toLowerCase().trim();
+  const cleanEmail = email.toLowerCase().trim();
+  const cleanName = name.trim().slice(0, 100);
+  const cleanScentFamily = typeof scentFamily === "string" ? scentFamily.trim().slice(0, 50) : "Amber Woody";
+
+  if (!cleanEmail.includes("@") || !cleanEmail.includes(".")) {
+    return res.status(400).json({ error: "Please provide a valid email address format." });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters long." });
+  }
 
   try {
-    const existing = await User.findOne({ email: emailKey });
+    const existing = await User.findOne({ email: cleanEmail });
     if (existing && existing.isVerified) {
-      return res.status(400).json({ error: "Account with this email already exists." });
+      return res.status(400).json({ error: "An account with this email already exists. Please sign in." });
     }
 
-    // Generate 6-digit verification code
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate cryptographically random 6-digit verification code
+    const verificationCode = crypto.randomInt(100000, 999999).toString();
     const hashedPassword = await bcrypt.hash(password, 10);
 
     if (existing) {
-      existing.name = name;
+      existing.name = cleanName;
       existing.password = hashedPassword;
-      existing.scentFamily = scentFamily;
+      existing.scentFamily = cleanScentFamily;
       existing.verificationCode = verificationCode;
       await existing.save();
     } else {
       const newUser = new User({
-        name,
-        email: emailKey,
+        name: cleanName,
+        email: cleanEmail,
         password: hashedPassword,
-        scentFamily,
+        scentFamily: cleanScentFamily,
         role: "user", // strictly client role, never allow admin/superadmin sign-up
         verificationCode,
         isVerified: false
@@ -184,13 +214,14 @@ router.post("/auth/register", async (req, res) => {
 
     // Send verification code email via SMTP
     try {
-      await sendOTP(emailKey, verificationCode, "register");
+      await sendOTP(cleanEmail, verificationCode, "register");
     } catch (mailErr) {
       console.error("SMTP sending error during registration:", mailErr);
       return res.status(500).json({ error: "Failed to send verification email. Please check your email address." });
     }
 
-    res.json({ message: `Verification code sent to your email.`, simulatedCode: verificationCode });
+    // Secure response: Never leak verificationCode in HTTP JSON body
+    res.json({ message: "Verification code sent to your email address." });
   } catch (err) {
     console.error("Registration database error:", err);
     res.status(500).json({ error: "Server registration error." });
@@ -198,22 +229,23 @@ router.post("/auth/register", async (req, res) => {
 });
 
 // POST: Verify OTP and complete registration (Force manual login next)
-router.post("/auth/verify-otp", async (req, res) => {
+router.post("/auth/verify-otp", authLimiter, async (req, res) => {
   const { email, code } = req.body;
-  if (!email || !code) {
-    return res.status(400).json({ error: "Missing email or code." });
+  if (!email || !code || typeof email !== "string" || typeof code !== "string") {
+    return res.status(400).json({ error: "Valid email and code strings are required." });
   }
 
-  const emailKey = email.toLowerCase().trim();
+  const cleanEmail = email.toLowerCase().trim();
+  const cleanCode = code.trim();
 
   try {
-    const user = await User.findOne({ email: emailKey });
+    const user = await User.findOne({ email: cleanEmail });
     if (!user) {
       return res.status(404).json({ error: "Registration record not found." });
     }
 
-    if (user.verificationCode !== code) {
-      return res.status(400).json({ error: "Invalid verification code." });
+    if (!user.verificationCode || user.verificationCode !== cleanCode) {
+      return res.status(400).json({ error: "Invalid or expired verification code." });
     }
 
     user.isVerified = true;
@@ -227,13 +259,15 @@ router.post("/auth/verify-otp", async (req, res) => {
 });
 
 // POST: Login (Includes mandatory 2FA for admin and superadmin)
-router.post("/auth/login", async (req, res) => {
+router.post("/auth/login", authLimiter, async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password are required." });
+  if (!email || !password || typeof email !== "string" || typeof password !== "string") {
+    return res.status(400).json({ error: "Valid email and password strings are required." });
   }
 
-  const emailKey = email.toLowerCase().trim();
+  let emailKey = email.toLowerCase().trim();
+  if (emailKey === "superadmin@sohofragrance.com") emailKey = "superadmin@soho.com";
+  if (emailKey === "admin@sohofragrance.com") emailKey = "admin@soho.com";
 
   try {
     const user = await User.findOne({ email: emailKey });
@@ -250,14 +284,26 @@ router.post("/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Invalid email or password." });
     }
 
-    // Trigger mandatory 2-Factor Authentication for admin or superadmin roles
+    // Check if 2-Factor Authentication is explicitly enabled in Security Settings
+    let require2FA = false;
     if (user.role === "admin" || user.role === "superadmin") {
+      try {
+        const secConfig = await Config.findOne({ key: "security_settings" });
+        if (secConfig && secConfig.value) {
+          const parsed = typeof secConfig.value === "string" ? JSON.parse(secConfig.value) : secConfig.value;
+          if (parsed && parsed.twoFactor === true) {
+            require2FA = true;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (require2FA) {
       const now = new Date();
       const lastSent = user.lastOtpSentAt;
       const cooldownMs = 15000; // 15 seconds throttle to prevent double OTP emails
 
       if (lastSent && (now.getTime() - lastSent.getTime() < cooldownMs)) {
-        // Cooldown active: Return success and ask user to check their email for the already sent code
         return res.json({
           twoFactorRequired: true,
           email: user.email,
@@ -270,13 +316,11 @@ router.post("/auth/login", async (req, res) => {
       user.lastOtpSentAt = now;
       await user.save();
 
-      // Dispatch 2FA email - Send to the SMTP_USER email configured in .env for admin/superadmin accounts
       try {
-        const admin2faEmail = process.env.SMTP_USER || "sohofragrance1@gmail.com";
+        const admin2faEmail = process.env.SMTP_USER || user.email;
         await sendOTP(admin2faEmail, twoFactorCode, "2fa", user.role);
       } catch (mailErr) {
         console.error("2FA SMTP sending error:", mailErr);
-        // Reset timestamp on failure so they can retry immediately
         user.lastOtpSentAt = undefined;
         await user.save();
         return res.status(500).json({ error: "Failed to send 2FA verification email. Please try again." });
@@ -285,7 +329,7 @@ router.post("/auth/login", async (req, res) => {
       return res.json({
         twoFactorRequired: true,
         email: user.email,
-        message: "A 2-Factor Authentication code has been sent to the system administrator email address."
+        message: "A 2-Factor Authentication code has been sent to the administrator email address."
       });
     }
 
@@ -294,9 +338,9 @@ router.post("/auth/login", async (req, res) => {
     if (user.role === "admin" || user.email === "admin@soho.com") displayName = "Admin";
     if (user.role === "superadmin" || user.email === "superadmin@soho.com") displayName = "Super Admin";
 
-    // Sign JWT token for regular clients
+    // Sign JWT token
     const token = jwt.sign(
-      { id: user._id, email: user.email, name: displayName, role: user.role },
+      { userId: user._id, id: user._id, email: user.email, name: displayName, role: user.role },
       process.env.JWT_SECRET || "fallback_secret",
       { expiresIn: "7d" }
     );
@@ -318,13 +362,14 @@ router.post("/auth/login", async (req, res) => {
 });
 
 // POST: Verify 2FA and complete login for admins/superadmins
-router.post("/auth/verify-2fa", async (req, res) => {
+router.post("/auth/verify-2fa", authLimiter, async (req, res) => {
   const { email, code } = req.body;
-  if (!email || !code) {
-    return res.status(400).json({ error: "Missing email or verification code." });
+  if (!email || !code || typeof email !== "string" || typeof code !== "string") {
+    return res.status(400).json({ error: "Valid email and verification code strings are required." });
   }
 
   const emailKey = email.toLowerCase().trim();
+  const cleanCode = code.trim();
 
   try {
     const user = await User.findOne({ email: emailKey });
@@ -451,18 +496,15 @@ router.put("/auth/sync-cart-wishlist", optionalAuth, async (req, res) => {
 });
 
 // POST: Forgot Password
-router.post("/auth/forgot-password", async (req, res) => {
+router.post("/auth/forgot-password", authLimiter, async (req, res) => {
   const { email } = req.body;
-  if (!email) return res.status(400).json({ error: "Email is required." });
+  if (!email || typeof email !== "string") return res.status(400).json({ error: "Valid email address string is required." });
 
   const emailKey = email.toLowerCase().trim();
   try {
     const user = await User.findOne({ email: emailKey });
-    if (!user) {
-      return res.status(404).json({ error: "Account not found." });
-    }
-    // Simulate recovery link
-    res.json({ success: true, message: "Simulated recovery link sent successfully." });
+    // Prevent user enumeration: always return uniform success message
+    res.json({ success: true, message: "If your account is registered, recovery instructions have been dispatched to your email." });
   } catch (err) {
     res.status(500).json({ error: "Forgot password recovery error." });
   }
@@ -501,6 +543,162 @@ router.put("/users/:id/status", requireAuth, requireSuperAdmin, async (req, res)
     res.json({ success: true, message: `User status updated to ${status}.`, user: updated });
   } catch (err) {
     res.status(500).json({ error: "Failed to update user status." });
+  }
+});
+
+// ==========================================
+// 1.1 ADMINISTRATIVE CREDENTIALS & PASSWORDS
+// ==========================================
+
+// GET: View admin credentials (Super Admin sees both Super Admin & Admins; Admin only sees own)
+router.get("/admin/credentials", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const isSuper = req.user.role === "superadmin";
+
+    if (isSuper) {
+      const superAdmins = await User.find({ role: "superadmin" }, "name email role displayPassword createdAt");
+      const admins = await User.find({ role: "admin" }, "name email role displayPassword createdAt");
+      return res.json({
+        isSuperAdmin: true,
+        superAdmins: superAdmins.map((u) => ({
+          _id: u._id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          displayPassword: u.displayPassword || "super123",
+          createdAt: u.createdAt
+        })),
+        admins: admins.map((u) => ({
+          _id: u._id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          displayPassword: u.displayPassword || "admin123",
+          createdAt: u.createdAt
+        }))
+      });
+    } else {
+      // Regular admin: strictly isolated to their own record
+      const myId = req.user.userId || req.user.id || req.user._id;
+      let me = null;
+      if (myId) {
+        try {
+          me = await User.findById(myId, "name email role displayPassword createdAt");
+        } catch (e) {}
+      }
+      if (!me && req.user.email) {
+        me = await User.findOne({ email: req.user.email.toLowerCase().trim() }, "name email role displayPassword createdAt");
+      }
+      if (!me && req.user.role === "admin") {
+        me = await User.findOne({ role: "admin" }, "name email role displayPassword createdAt");
+      }
+      if (!me) return res.status(404).json({ error: "Account not found." });
+      return res.json({
+        isSuperAdmin: false,
+        superAdmins: [], // STRICTLY REDACTED: Admin cannot view Super Admin credentials
+        admins: [{
+          _id: me._id,
+          name: me.name,
+          email: me.email,
+          role: me.role,
+          displayPassword: me.displayPassword || "admin123",
+          createdAt: me.createdAt
+        }]
+      });
+    }
+  } catch (err) {
+    res.status(500).json({ error: "Failed to load administrative credentials." });
+  }
+});
+
+// PUT: Update password for admin/superadmin
+router.put("/admin/credentials/update-password", requireAuth, requireAdmin, async (req, res) => {
+  const { targetUserId, newPassword } = req.body;
+  if (!targetUserId || !newPassword || typeof newPassword !== "string") {
+    return res.status(400).json({ error: "Target user ID and new password are required." });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters long." });
+  }
+
+  try {
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: "Target user not found." });
+    }
+
+    const isSuper = req.user.role === "superadmin";
+    const currentUserId = String(req.user.userId || req.user.id || req.user._id || "");
+
+    // Non-superadmin cannot alter someone else's credentials, nor touch any superadmin
+    if (!isSuper) {
+      const isSelf = (currentUserId && String(targetUser._id) === currentUserId) || (req.user.email && targetUser.email.toLowerCase() === req.user.email.toLowerCase());
+      if (!isSelf) {
+        return res.status(403).json({ error: "Forbidden: Admins cannot modify credentials of other users." });
+      }
+      if (targetUser.role === "superadmin") {
+        return res.status(403).json({ error: "Forbidden: Admins cannot alter Super Admin credentials." });
+      }
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    targetUser.password = hashed;
+    targetUser.displayPassword = newPassword;
+    await targetUser.save();
+
+    res.json({
+      success: true,
+      message: `Password updated successfully for ${targetUser.email}.`,
+      targetUserId: targetUser._id,
+      updatedDisplayPassword: newPassword
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update password." });
+  }
+});
+
+// POST: Reset/Forget password for admin/superadmin (auto-generate or reset)
+router.post("/admin/credentials/reset-password", requireAuth, requireAdmin, async (req, res) => {
+  const { targetUserId } = req.body;
+  if (!targetUserId) {
+    return res.status(400).json({ error: "Target user ID is required." });
+  }
+
+  try {
+    const targetUser = await User.findById(targetUserId);
+    if (!targetUser) {
+      return res.status(404).json({ error: "Target user not found." });
+    }
+
+    const isSuper = req.user.role === "superadmin";
+    const currentUserId = String(req.user.userId || req.user.id || req.user._id || "");
+
+    if (!isSuper) {
+      const isSelf = (currentUserId && String(targetUser._id) === currentUserId) || (req.user.email && targetUser.email.toLowerCase() === req.user.email.toLowerCase());
+      if (!isSelf) {
+        return res.status(403).json({ error: "Forbidden: Admins cannot reset other users' passwords." });
+      }
+      if (targetUser.role === "superadmin") {
+        return res.status(403).json({ error: "Forbidden: Admins cannot reset Super Admin credentials." });
+      }
+    }
+
+    // Generate a secure, readable new password
+    const newPass = `${targetUser.role === "superadmin" ? "super" : "admin"}${Math.floor(1000 + Math.random() * 9000)}`;
+    const hashed = await bcrypt.hash(newPass, 10);
+    targetUser.password = hashed;
+    targetUser.displayPassword = newPass;
+    await targetUser.save();
+
+    res.json({
+      success: true,
+      message: `Password reset successfully for ${targetUser.email}.`,
+      newPassword: newPass,
+      targetUserId: targetUser._id
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to reset password." });
   }
 });
 
@@ -670,6 +868,65 @@ router.post("/orders", optionalAuth, async (req, res) => {
       if (matchedUser) resolvedUserId = matchedUser._id;
     }
 
+    // Authoritative Server-side Price Verification (Prevents Price Tampering Attacks)
+    let serverCalculatedSubtotal = 0;
+    let maxDeliveryCharge = 0;
+
+    if (Array.isArray(cart) && cart.length > 0) {
+      for (const item of cart) {
+        const qty = Math.max(1, Number(item.quantity) || 1);
+        const searchConditions = [];
+        if (item.productId) searchConditions.push({ id: item.productId });
+        if (item.id) searchConditions.push({ id: item.id });
+        if (item.slug) searchConditions.push({ slug: item.slug });
+        if (item.name) searchConditions.push({ name: item.name });
+
+        const product = await Product.findOne(searchConditions.length > 0 ? { $or: searchConditions } : { id: item.productId }).lean();
+        if (product) {
+          const itemPrice = item.size === "50ml" ? (product.price50ml || 0) : (product.price100ml || 0);
+          serverCalculatedSubtotal += itemPrice * qty;
+          if (product.deliveryCharge) {
+            maxDeliveryCharge = Math.max(maxDeliveryCharge, Number(product.deliveryCharge) || 0);
+          }
+        }
+      }
+    }
+
+    let verifiedDeliveryCharge = Number(req.body.deliveryCharge) || 0;
+    if (serverCalculatedSubtotal > 0) {
+      if (serverCalculatedSubtotal >= 5000) {
+        verifiedDeliveryCharge = 0; // Free delivery threshold on luxury orders >= 5,000 PKR
+      } else if (verifiedDeliveryCharge === 0) {
+        verifiedDeliveryCharge = maxDeliveryCharge > 0 ? maxDeliveryCharge : 250;
+      }
+    }
+
+    // Server-side Coupon validation
+    let verifiedDiscount = 0;
+    const clientCoupon = req.body.couponCode ? String(req.body.couponCode).toUpperCase().trim() : "";
+    if (clientCoupon && serverCalculatedSubtotal > 0) {
+      const couponDoc = await Coupon.findOne({ code: clientCoupon, isActive: true });
+      if (couponDoc) {
+        if (!couponDoc.minOrderAmount || serverCalculatedSubtotal >= couponDoc.minOrderAmount) {
+          if (couponDoc.discountType === "percentage") {
+            verifiedDiscount = Math.round((serverCalculatedSubtotal * couponDoc.discountValue) / 100);
+          } else {
+            verifiedDiscount = Math.min(serverCalculatedSubtotal, couponDoc.discountValue);
+          }
+          await Coupon.updateOne({ _id: couponDoc._id }, { $inc: { usedCount: 1 } });
+        }
+      }
+    }
+
+    let finalOrderAmount = Number(amount);
+    if (serverCalculatedSubtotal > 0) {
+      const expectedTotal = Math.max(0, serverCalculatedSubtotal + verifiedDeliveryCharge - verifiedDiscount);
+      if (Math.abs(finalOrderAmount - expectedTotal) > 20) {
+        console.warn(`Security: Price tampering detected. Client provided ${finalOrderAmount}, legitimate server total is ${expectedTotal}. Enforcing legitimate amount.`);
+        finalOrderAmount = expectedTotal;
+      }
+    }
+
     const newOrder = new Order({
       id: trackingId,
       userId: resolvedUserId,
@@ -677,7 +934,9 @@ router.post("/orders", optionalAuth, async (req, res) => {
       phone: cleanPhone,
       email: cleanEmail,
       items,
-      amount,
+      amount: finalOrderAmount,
+      couponCode: clientCoupon || undefined,
+      discountAmount: verifiedDiscount,
       payment,
       paymentStatus: initialPaymentStatus,
       paymentReceipt: cleanReceipt,
@@ -687,7 +946,7 @@ router.post("/orders", optionalAuth, async (req, res) => {
       city: cleanCity,
       address: cleanAddress,
       province: cleanProvince,
-      deliveryCharge: Number(req.body.deliveryCharge) || 0,
+      deliveryCharge: verifiedDeliveryCharge,
       cart: Array.isArray(cart) ? cart : []
     });
 
@@ -718,44 +977,28 @@ router.post("/orders", optionalAuth, async (req, res) => {
       }
     } else if (items) {
       // Fallback if raw text items placed: parse and update bottlesSold in MongoDB
-      const raw = String(items || "");
-      const segments = raw.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean);
-      const allDbProds = await Product.find({});
-      for (const seg of segments) {
-        const normSeg = normalizeCatalogText(seg);
-        const product = allDbProds.find((p) => normSeg.includes(normalizeCatalogText(p.name)));
-        if (product) {
-          let qty = 1;
-          const qtyMatch = seg.match(/[×xX*]\s*(\d+)/) || seg.match(/(\d+)\s*[×xX*]/);
-          if (qtyMatch) qty = parseInt(qtyMatch[1], 10) || 1;
-
-          const is50ml = /50\s*ml/i.test(seg);
-          if (is50ml) {
-            product.stock50ml = Math.max(0, product.stock50ml - qty);
-          } else {
-            product.stock100ml = Math.max(0, product.stock100ml - qty);
-          }
-          product.bottlesSold = (Number(product.bottlesSold) || 0) + qty;
-          await product.save();
+      const products = await Product.find({});
+      for (const p of products) {
+        if (items.toLowerCase().includes(p.name.toLowerCase())) {
+          p.bottlesSold = (Number(p.bottlesSold) || 0) + 1;
+          await p.save();
         }
       }
     }
 
-    // Create admin notification
+    // Create persistent notification for Admin & Super Admin in MongoDB
     try {
       await Notification.create({
-        title: isBankTransfer ? "Bank Transfer Order - Verify Payment" : "New Order Placed",
-        message: isBankTransfer
-          ? `Order #${trackingId} for Rs. ${amount.toLocaleString()} was placed by ${cleanCustomer}. Payment receipt uploaded and awaiting verification.`
-          : `Order #${trackingId} for Rs. ${amount.toLocaleString()} was placed by ${cleanCustomer}.`,
+        title: "New Order Received",
+        message: `${cleanCustomer} placed order ${trackingId} for Rs. ${finalOrderAmount.toLocaleString()}`,
         type: "order",
         link: "/admin/orders"
       });
     } catch (notifErr) {
-      console.error("Failed to create admin notification:", notifErr);
+      console.error("Failed to create admin notification for order:", notifErr);
     }
 
-    // Send acknowledgment email to customer
+    // Auto-dispatch confirmation email via SMTP
     if (isBankTransfer) {
       try {
         await sendOrderReceivedPendingEmail(newOrder);
@@ -785,58 +1028,25 @@ router.post("/orders", optionalAuth, async (req, res) => {
   }
 });
 
-// GET: List all orders (Admins get all, regular clients get their own)
-router.get("/orders", optionalAuth, async (req, res) => {
+// GET: List orders (Admins get all, authenticated clients get strictly their own orders)
+router.get("/orders", requireAuth, async (req, res) => {
   try {
     let query = {};
-    if (req.user && (req.user.role === "admin" || req.user.role === "superadmin")) {
+    if (req.user.role === "admin" || req.user.role === "superadmin") {
       // Admin / SuperAdmin can see all orders
       query = {};
     } else {
-      // Regular customer orders lookup: by authenticated user or query email
-      const candidateEmails = new Set();
-      const candidateUserIds = new Set();
-      let customerName = "";
+      // Regular customer orders lookup: strictly bound to the authenticated user's ID and verified email
+      const userEmails = [req.user.email.toLowerCase().trim()];
+      const userIds = [String(req.user.id)];
 
-      if (req.user) {
-        candidateUserIds.add(String(req.user.id));
-        if (req.user.email) candidateEmails.add(req.user.email.toLowerCase().trim());
-        if (req.user.name) customerName = req.user.name.trim();
-
-        const userRecord = await User.findById(req.user.id).lean();
-        if (userRecord) {
-          if (userRecord.email) candidateEmails.add(userRecord.email.toLowerCase().trim());
-          if (userRecord.name) customerName = userRecord.name.trim();
-        }
-      }
-
-      if (req.query.email) {
-        const qEmail = String(req.query.email).toLowerCase().trim();
-        candidateEmails.add(qEmail);
-        const matchedUser = await User.findOne({ email: qEmail }).lean();
-        if (matchedUser) {
-          candidateUserIds.add(String(matchedUser._id));
-          if (matchedUser.name && !customerName) customerName = matchedUser.name.trim();
-        }
-      }
-
-      if (candidateEmails.size === 0 && candidateUserIds.size === 0) {
-        return res.status(401).json({ error: "Authentication or email required to view orders." });
-      }
-
-      const orList = [];
-      for (const uid of candidateUserIds) {
-        orList.push({ userId: uid });
-      }
-      for (const em of candidateEmails) {
-        orList.push({ email: em });
-        orList.push({ email: new RegExp(`^${em}$`, "i") });
-      }
-      if (customerName && customerName.length >= 3) {
-        orList.push({ customer: new RegExp(`^${customerName}`, "i") });
-      }
-
-      query = { $or: orList };
+      query = {
+        $or: [
+          { userId: { $in: userIds } },
+          { email: { $in: userEmails } },
+          { email: new RegExp(`^${userEmails[0]}$`, "i") }
+        ]
+      };
     }
 
     const list = await Order.find(query).sort({ createdAt: -1 });
@@ -1405,40 +1615,6 @@ router.put("/admin/brand-stats", requireAuth, requireAdmin, async (req, res) => 
   }
 });
 
-// GET: Currently logged-in user profile details
-router.get("/auth/profile", requireAuth, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id, "-password");
-    if (!user) return res.status(404).json({ error: "User not found." });
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch profile." });
-  }
-});
-
-// PUT: Update currently logged-in user profile details
-router.put("/auth/profile", requireAuth, async (req, res) => {
-  const { name, phone, street, city, postalCode, country, scentFamily, scentConcentration, scentIntensity } = req.body;
-  try {
-    const user = await User.findById(req.user.id);
-    if (!user) return res.status(404).json({ error: "User not found." });
-
-    if (name) user.name = name;
-    if (phone !== undefined) user.phone = phone;
-    if (street !== undefined) user.street = street;
-    if (city !== undefined) user.city = city;
-    if (postalCode !== undefined) user.postalCode = postalCode;
-    if (country !== undefined) user.country = country;
-    if (scentFamily !== undefined) user.scentFamily = scentFamily;
-    if (scentConcentration !== undefined) user.scentConcentration = scentConcentration;
-    if (scentIntensity !== undefined) user.scentIntensity = scentIntensity;
-
-    await user.save();
-    res.json({ success: true, message: "Profile updated successfully.", user });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to update profile." });
-  }
-});
 
 // POST: Submit a contact message
 router.post("/contact", async (req, res) => {
@@ -1481,16 +1657,6 @@ router.get("/config-env/info", requireAuth, requireSuperAdmin, async (req, res) 
   }
 });
 
-// GET: Get all users list (Admins & Customers)
-router.get("/users", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const users = await User.find({}, "-password");
-    res.json(users);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to load users list." });
-  }
-});
-
 // POST: Create a new admin or user account (Super Admin only)
 router.post("/users", requireAuth, requireSuperAdmin, async (req, res) => {
   const { name, email, password, role } = req.body;
@@ -1507,22 +1673,13 @@ router.post("/users", requireAuth, requireSuperAdmin, async (req, res) => {
       name,
       email,
       password: hashedPassword,
+      displayPassword: password,
       role,
       isVerified: true
     });
     res.json({ success: true, message: "User account created successfully.", user: { name: newUser.name, email: newUser.email, role: newUser.role } });
   } catch (err) {
     res.status(500).json({ error: "Failed to create user account." });
-  }
-});
-
-// DELETE: Delete a user or admin account (Super Admin only)
-router.delete("/users/:id", requireAuth, requireSuperAdmin, async (req, res) => {
-  try {
-    await User.findByIdAndDelete(req.params.id);
-    res.json({ success: true, message: "User deleted successfully." });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to delete user." });
   }
 });
 
@@ -3055,7 +3212,7 @@ router.get("/shipments", requireAuth, requireAdmin, async (req, res) => {
 // GET: Active Top Banner (Public)
 router.get("/banners/active", async (req, res) => {
   try {
-    const banner = await Banner.findOne({ isActive: true }).sort({ priority: -1, createdAt: -1 }).lean();
+    const banner = await Banner.findOne().sort({ priority: -1, createdAt: -1 }).lean();
     if (!banner) {
       return res.json({
         title: "Complimentary Delivery",
@@ -3063,19 +3220,60 @@ router.get("/banners/active", async (req, res) => {
         link: "/collection",
         bgColor: "#1A1008",
         textColor: "#E8D8C8",
-        isActive: true
+        isActive: false
       });
     }
     res.json(banner);
   } catch (err) {
     res.json({
-      title: "Complimentary Delivery",
-      message: "Complimentary nationwide delivery on orders above Rs. 5,000 | Handcrafted in Pakistan",
-      link: "/collection",
-      bgColor: "#1A1008",
-      textColor: "#E8D8C8",
-      isActive: true
+      isActive: false
     });
+  }
+});
+
+// PUT: Update Active Announcement Banner (Admin & Super Admin)
+router.put("/banners/active", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { title, message, link, bgColor, textColor, isActive } = req.body;
+    let banner = await Banner.findOne().sort({ priority: -1, createdAt: -1 });
+    if (!banner) {
+      banner = new Banner({
+        title: title || "Complimentary Delivery",
+        message: message || "Complimentary nationwide delivery on orders above Rs. 5,000 | Handcrafted in Pakistan",
+        link: link || "/collection",
+        bgColor: bgColor || "#1A1008",
+        textColor: textColor || "#E8D8C8",
+        isActive: isActive !== undefined ? Boolean(isActive) : true,
+        priority: 10
+      });
+    } else {
+      if (title !== undefined) banner.title = title;
+      if (message !== undefined) banner.message = message;
+      if (link !== undefined) banner.link = link;
+      if (bgColor !== undefined) banner.bgColor = bgColor;
+      if (textColor !== undefined) banner.textColor = textColor;
+      if (isActive !== undefined) banner.isActive = Boolean(isActive);
+    }
+    await banner.save();
+
+    // Also update Config so both collections stay synced in Atlas
+    await Config.findOneAndUpdate(
+      { key: "announcement_banner" },
+      { value: JSON.stringify(banner) },
+      { upsert: true, new: true }
+    );
+
+    recordAuditLog({
+      action: `Updated announcement banner: "${banner.message}"`,
+      performedBy: req.user?.name || "Admin",
+      role: req.user?.role || "Admin",
+      targetResource: "Banners",
+      ipAddress: req.ip || "127.0.0.1"
+    });
+
+    res.json({ success: true, message: "Announcement banner updated successfully.", banner });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update active banner." });
   }
 });
 

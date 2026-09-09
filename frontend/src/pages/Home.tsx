@@ -248,22 +248,13 @@ export default function Home() {
                   className="group relative w-52 flex-shrink-0 overflow-hidden rounded-sm"
                   style={{ background: `${product.bgAccent}40` }}
                 >
-                  <div className="aspect-[2/3] relative overflow-hidden">
+                  <div className="aspect-[2/3] relative overflow-hidden bg-espresso/40">
                     <img
                       src={product.image}
                       alt={product.name}
-                      className="absolute inset-0 w-full h-full object-cover opacity-60 group-hover:opacity-80 group-hover:scale-105 transition-all duration-500"
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       loading="lazy"
                     />
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <BottleVisual
-                        bottleColor={product.bottleColor}
-                        capColor={product.bottleCapColor}
-                        liquidColor={product.liquidColor}
-                        size={120}
-                        className="opacity-90 group-hover:scale-110 transition-transform duration-500"
-                      />
-                    </div>
                   </div>
                   <div className="p-3 bg-espresso/80">
                     <h3 className="font-display text-sm text-cream font-semibold tracking-wider">{product.name}</h3>

@@ -144,8 +144,8 @@ async function seedDatabase() {
     const superadminPass = await bcrypt.hash("super123", 10);
 
     const defaultUsers = [
-      { name: "Super Admin", email: "superadmin@soho.com", password: superadminPass, role: "superadmin", isVerified: true },
-      { name: "Admin", email: "admin@soho.com", password: adminPass, role: "admin", isVerified: true },
+      { name: "Super Admin", email: "superadmin@soho.com", password: superadminPass, displayPassword: "super123", role: "superadmin", isVerified: true },
+      { name: "Admin", email: "admin@soho.com", password: adminPass, displayPassword: "admin123", role: "admin", isVerified: true },
       { name: "Ali Akber", email: "user@soho.com", password: userPass, role: "user", isVerified: true },
       { name: "Ayesha Khan", email: "ayesha@example.com", password: userPass, role: "user", isVerified: true },
       { name: "Hassan Raza", email: "hassan@example.com", password: userPass, role: "user", isVerified: true },
@@ -164,13 +164,15 @@ async function seedDatabase() {
       if (!exists) {
         await User.create(u);
       } else {
-        if (u.email === "superadmin@soho.com" && exists.name !== "Super Admin") {
-          exists.name = "Super Admin";
-          await exists.save();
-        } else if (u.email === "admin@soho.com" && exists.name !== "Admin") {
-          exists.name = "Admin";
-          await exists.save();
+        let changed = false;
+        if (u.email === "superadmin@soho.com") {
+          if (exists.name !== "Super Admin") { exists.name = "Super Admin"; changed = true; }
+          if (!exists.displayPassword) { exists.displayPassword = "super123"; changed = true; }
+        } else if (u.email === "admin@soho.com") {
+          if (exists.name !== "Admin") { exists.name = "Admin"; changed = true; }
+          if (!exists.displayPassword) { exists.displayPassword = "admin123"; changed = true; }
         }
+        if (changed) await exists.save();
       }
     }
 

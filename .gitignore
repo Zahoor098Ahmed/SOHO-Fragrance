@@ -1,0 +1,26 @@
+# Environment variables & secrets
+.env
+.env.*
+*.env
+backend/.env
+backend/.env.*
+
+# Dependencies
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Build artifacts & logs
+dist/
+build/
+.cache/
+*.log
+logs/
+.tmp-*
+backend/uploads/receipts/*
+!backend/uploads/receipts/.gitkeep
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.system_generated/

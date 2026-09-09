@@ -271,13 +271,64 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     products: getInitialProducts(),
   });
 
-  // Sync products from REST API on mount
+  // Sync products from REST API on mount and keep updated live
   React.useEffect(() => {
-    fetchProducts().then((loaded) => {
-      if (loaded && Array.isArray(loaded) && loaded.length > 0) {
-        dispatch({ type: "SET_PRODUCTS", products: loaded });
+    const refreshProducts = () => {
+      fetchProducts().then((loaded) => {
+        if (loaded && Array.isArray(loaded) && loaded.length > 0) {
+          dispatch({ type: "SET_PRODUCTS", products: loaded });
+        }
+      });
+    };
+
+    refreshProducts();
+
+    // 1. Live auto-refresh polling every 15 seconds
+    const interval = setInterval(refreshProducts, 15000);
+
+    // 2. Auto-refresh when user switches tabs back to the store
+    const handleFocus = () => {
+      if (!document.hidden) {
+        refreshProducts();
       }
-    });
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleFocus);
+
+    // 3. Local event listener
+    window.addEventListener("products-updated", refreshProducts);
+
+    // 4. Cross-tab storage event
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "soho_products_sync") {
+        refreshProducts();
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+
+    // 5. BroadcastChannel sync
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel("soho_sync_channel");
+      channel.onmessage = (msg) => {
+        if (msg.data === "products-updated") {
+          refreshProducts();
+        }
+      };
+    } catch (_) {}
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleFocus);
+      window.removeEventListener("products-updated", refreshProducts);
+      window.removeEventListener("storage", handleStorage);
+      if (channel) {
+        try {
+          channel.close();
+        } catch (_) {}
+      }
+    };
   }, []);
 
   // Keep localStorage and backend synced on every cart change

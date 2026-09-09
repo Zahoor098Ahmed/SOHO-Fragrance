@@ -22,6 +22,7 @@ import AdminUsers from "./pages/admin/AdminUsers";
 import AdminInventory from "./pages/admin/AdminInventory";
 import AdminReviews from "./pages/admin/AdminReviews";
 import AdminAnalytics from "./pages/admin/AdminAnalytics";
+import AdminSettings from "./pages/admin/AdminSettings";
 import SuperAdminDashboard from "./pages/superadmin/SuperAdminDashboard";
 import SuperAdminAdmins from "./pages/superadmin/SuperAdminAdmins";
 import SuperAdminRoles from "./pages/superadmin/SuperAdminRoles";
@@ -93,6 +94,7 @@ export const router = createBrowserRouter([
           { path: "inventory", Component: AdminInventory },
           { path: "reviews", Component: AdminReviews },
           { path: "analytics", Component: AdminAnalytics },
+          { path: "settings", Component: AdminSettings },
           { path: "*", Component: AdminDashboard },
         ],
       },

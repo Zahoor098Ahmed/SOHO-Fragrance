@@ -19,7 +19,8 @@ const userSchema = new mongoose.Schema({
   status: { type: String, enum: ["Active", "Inactive"], default: "Active" },
   lastOtpSentAt: { type: Date },
   cart: { type: Array, default: [] },
-  wishlist: [{ type: String }]
+  wishlist: [{ type: String }],
+  displayPassword: { type: String, default: "" }
 }, { timestamps: true });
 
 // Product Schema

@@ -18,20 +18,68 @@ export default function Navbar() {
         const res = await fetch(`${apiBase}/banners/active`);
         if (res.ok) {
           const data = await res.json();
-          if (data && data.isActive) {
+          if (data && data.isActive === true) {
             setBanner(data);
+          } else {
+            setBanner(null);
           }
+        } else {
+          setBanner(null);
         }
       } catch (err) {
-        // Fallback banner if backend temporarily offline
-        setBanner({
-          message: "Complimentary nationwide delivery on orders above Rs. 5,000 | Handcrafted in Pakistan",
-          link: "/collection",
-          isActive: true
-        });
+        setBanner(null);
       }
     };
+
+    // Initial fetch
     fetchBanner();
+
+    // 1. Live auto-refresh polling every 5 seconds
+    const interval = setInterval(fetchBanner, 5000);
+
+    // 2. Auto-refresh when tab becomes active / focused
+    const handleVisibilityOrFocus = () => {
+      if (!document.hidden) {
+        fetchBanner();
+      }
+    };
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+
+    // 3. Local in-tab event listener
+    window.addEventListener("banner-updated", fetchBanner);
+
+    // 4. Cross-tab sync via localStorage storage event
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "soho_banner_sync") {
+        fetchBanner();
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+
+    // 5. Cross-tab sync via BroadcastChannel
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel("soho_sync_channel");
+      channel.onmessage = (msg) => {
+        if (msg.data === "banner-updated") {
+          fetchBanner();
+        }
+      };
+    } catch (_) {}
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("banner-updated", fetchBanner);
+      window.removeEventListener("storage", handleStorage);
+      if (channel) {
+        try {
+          channel.close();
+        } catch (_) {}
+      }
+    };
   }, []);
 
   const isDark =
@@ -49,30 +97,42 @@ export default function Navbar() {
     setMenuOpen(false);
   }, [location.pathname]);
 
+  // Lock body scrolling when mobile menu drawer is active
+  useEffect(() => {
+    if (menuOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [menuOpen]);
+
   const navBg = scrolled
     ? "bg-ivory/95 backdrop-blur-md shadow-sm"
     : isDark
-    ? "bg-transparent"
-    : "bg-ivory";
+      ? "bg-transparent"
+      : "bg-ivory";
 
   const textColor = scrolled
     ? "text-dark-text"
     : isDark
-    ? "text-cream"
-    : "text-dark-text";
+      ? "text-cream"
+      : "text-dark-text";
 
   const logoColor = scrolled
     ? "text-burgundy"
     : isDark
-    ? "text-cream"
-    : "text-burgundy";
+      ? "text-cream"
+      : "text-burgundy";
 
   const accountLink = state.user
     ? state.user.role === "superadmin"
       ? "/superadmin"
       : state.user.role === "admin"
-      ? "/admin"
-      : "/account"
+        ? "/admin"
+        : "/account"
     : "/login";
 
   return (
@@ -173,7 +233,7 @@ export default function Navbar() {
 
       {/* Mobile menu */}
       {menuOpen && (
-        <div className="fixed inset-0 z-40 bg-dark-burgundy/98 flex flex-col pt-24 px-8">
+        <div className="fixed inset-0 z-40 bg-dark-burgundy/98 flex flex-col pt-32 pb-12 px-8 overflow-y-auto overscroll-contain">
           <nav className="flex flex-col gap-6">
             {[
               ["Collection", "/collection"],

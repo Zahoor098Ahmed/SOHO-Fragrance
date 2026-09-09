@@ -12,17 +12,10 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [showDemoOptions, setShowDemoOptions] = useState(false);
   const [is2FAStep, setIs2FAStep] = useState(false);
   const [twoFactorCode, setTwoFactorCode] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-
-  const mockUsers: Record<string, { name: string; role: "user" | "admin" | "superadmin"; pass: string }> = {
-    "user@soho.com": { name: "Ali Akber", role: "user", pass: "user123" },
-    "admin@soho.com": { name: "Admin", role: "admin", pass: "admin123" },
-    "superadmin@soho.com": { name: "Super Admin", role: "superadmin", pass: "super123" },
-  };
 
   const [forgotPassword, setForgotPassword] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
@@ -83,22 +76,10 @@ export default function Login() {
       }
     } catch (err: any) {
       console.error("Login fetch error:", err);
+      setError("Unable to connect to the authentication service. Please check your connection and try again.");
+    } finally {
+      setIsLoading(false);
     }
-
-    // Fallback to local mock users for testing
-    const targetUser = mockUsers[emailKey];
-    if (targetUser && targetUser.pass === password) {
-      const loggedUser: User = {
-        email: emailKey,
-        name: targetUser.name,
-        role: targetUser.role,
-        token: "mock-jwt-token-for-local-testing"
-      };
-      dispatch({ type: "SET_USER", user: loggedUser });
-    } else {
-      setError("Invalid email or password. Please verify your credentials.");
-    }
-    setIsLoading(false);
   };
 
   const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
@@ -123,46 +104,7 @@ export default function Login() {
     }
   };
 
-  const handleQuickLogin = async (quickEmail: string) => {
-    const quickUser = mockUsers[quickEmail];
-    if (quickUser) {
-      setEmail(quickEmail);
-      setPassword(quickUser.pass);
-      try {
-        const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080/api";
-        const res = await fetch(`${apiBase}/auth/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: quickEmail, password: quickUser.pass })
-        });
-        const data = await res.json();
-        if (res.ok) {
-          if (data.twoFactorRequired) {
-            setIs2FAStep(true);
-            setInfoMsg(data.message || "2-Factor Authentication code sent to your email.");
-            return;
-          }
-          const loggedUser: User = {
-            email: data.user.email,
-            name: data.user.name,
-            role: data.user.role,
-            token: data.token
-          };
-          dispatch({ type: "SET_USER", user: loggedUser });
-          return;
-        }
-      } catch (err) {}
 
-      // Fallback
-      const loggedUser: User = {
-        email: quickEmail,
-        name: quickUser.name,
-        role: quickUser.role,
-        token: "mock-jwt-token-for-local-testing"
-      };
-      dispatch({ type: "SET_USER", user: loggedUser });
-    }
-  };
 
   const handle2FASubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -369,40 +311,7 @@ export default function Login() {
           </>
         )}
 
-        {/* Quick Logins (Conditional) */}
-        {showDemoOptions && !forgotPassword && (
-          <div className="mt-8 pt-6 border-t border-cream">
-            <p className="text-[10px] text-center tracking-wider text-muted-text uppercase font-semibold mb-4">Quick Login for Testing</p>
-            <div className="space-y-2">
-              {[
-                { email: "user@soho.com", pass: "user123", label: "User (Client)", bg: "hover:bg-ivory" },
-                { email: "admin@soho.com", pass: "admin123", label: "Administrator", bg: "hover:bg-champagne/10" },
-                { email: "superadmin@soho.com", pass: "super123", label: "Super Admin", bg: "hover:bg-burgundy/5" },
-              ].map((option) => (
-                <button
-                  key={option.email}
-                  onClick={() => handleQuickLogin(option.email)}
-                  className="w-full py-3 px-4 border border-cream text-left text-xs text-dark-text flex flex-col gap-1 rounded-sm transition-all hover:bg-ivory cursor-pointer"
-                >
-                  <div className="flex justify-between w-full font-semibold">
-                    <span>{option.label}</span>
-                    <span className="text-[10px] text-burgundy font-mono">Pass: {option.pass}</span>
-                  </div>
-                  <div className="text-[10px] text-muted-text font-mono">{option.email}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
 
-        <div className="mt-6 text-center">
-          <button
-            onClick={() => setShowDemoOptions(!showDemoOptions)}
-            className="text-[9px] text-muted-text/30 hover:text-muted-text/60 tracking-[0.2em] uppercase transition-colors focus:outline-none cursor-pointer"
-          >
-            {showDemoOptions ? "Hide Demo Accounts" : "Developer Options"}
-          </button>
-        </div>
       </div>
     </div>
   );
