@@ -1228,8 +1228,8 @@ router.get("/config/:key", async (req, res) => {
         if (config) return res.json(config.value);
 
         let fallback = "";
-        if (key === "smtp_user") fallback = process.env.SMTP_USER || "sohofragrance1@gmail.com";
-        if (key === "smtp_pass") fallback = process.env.SMTP_PASS || "rmbfjupdjtwxyihl";
+        if (key === "smtp_user") fallback = process.env.SMTP_USER || "";
+        if (key === "smtp_pass") fallback = process.env.SMTP_PASS || "";
         if (typeof fallback === "string" && fallback.startsWith('"') && fallback.endsWith('"')) {
           fallback = fallback.substring(1, fallback.length - 1);
         }
@@ -2259,8 +2259,8 @@ router.get("/admin/smtp-accounts", requireAuth, requireSuperAdmin, async (req, r
   try {
     const count = await SmtpAccount.countDocuments();
     if (count === 0) {
-      let smtpUser = process.env.SMTP_USER || "sohofragrance1@gmail.com";
-      let smtpPass = process.env.SMTP_PASS || "rmbfjupdjtwxyihl";
+      let smtpUser = process.env.SMTP_USER || "";
+      let smtpPass = process.env.SMTP_PASS || "";
       let smtpFromName = process.env.SMTP_FROM_NAME || "SOHO Fragrance";
       
       if (smtpFromName.startsWith('"') && smtpFromName.endsWith('"')) {

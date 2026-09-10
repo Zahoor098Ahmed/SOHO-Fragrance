@@ -1,7 +1,10 @@
 import { MongoClient } from "mongodb";
 
-const localURI = "mongodb://localhost:27017/soho_fragrance";
-const atlasURI = "mongodb+srv://zahoorjamali32_db_user:F6e0NQibIASCwYG9@cluster0.hngg579.mongodb.net/soho_fragrance?retryWrites=true&w=majority";
+import dotenv from "dotenv";
+dotenv.config();
+
+const localURI = process.env.LOCAL_MONGODB_URI || "mongodb://localhost:27017/soho_fragrance";
+const atlasURI = process.env.MONGODB_URI || "";
 
 async function migrate() {
   console.log("=== Starting MongoDB Migration to Atlas ===");

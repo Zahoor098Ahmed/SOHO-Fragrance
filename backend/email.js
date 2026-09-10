@@ -2,8 +2,8 @@ import nodemailer from "nodemailer";
 import { Config, SmtpAccount } from "./models.js";
 
 const getTransporterAndSender = async () => {
-  let smtpUser = process.env.SMTP_USER || "sohofragrance1@gmail.com";
-  let smtpPass = process.env.SMTP_PASS || "rmbfjupdjtwxyihl";
+  let smtpUser = process.env.SMTP_USER || "";
+  let smtpPass = process.env.SMTP_PASS || "";
   let smtpFromName = process.env.SMTP_FROM_NAME || "SOHO Fragrance";
 
   try {
