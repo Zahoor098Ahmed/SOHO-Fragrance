@@ -72,7 +72,20 @@ export async function connectToDatabase() {
   }
 
   if (!cachedDbPromise) {
-    const mongoURI = process.env.MONGODB_URI || "mongodb://localhost:27017/soho_fragrance";
+    const rawURI = process.env.MONGODB_URI || 
+                   process.env.MONGO_URI || 
+                   process.env.MONGODB_URL || 
+                   process.env.DATABASE_URL || 
+                   (isVercel ? null : "mongodb://localhost:27017/soho_fragrance");
+
+    const mongoURI = rawURI ? String(rawURI).trim().replace(/^["']|["']$/g, "") : null;
+
+    if (!mongoURI) {
+      const errMessage = "MONGODB_URI is not set in Vercel Environment Variables. Please go to Vercel Dashboard -> Settings -> Environment Variables, add MONGODB_URI (Production, Preview, Development), and then REDEPLOY the project.";
+      console.error(errMessage);
+      throw new Error(errMessage);
+    }
+
     cachedDbPromise = mongoose.connect(mongoURI, {
       bufferCommands: false,
     }).then(async (m) => {
