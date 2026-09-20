@@ -12,6 +12,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: process.env.FIGMA_PUBLIC_URL ? `${process.env.FIGMA_PUBLIC_URL}/` : '/',
+    define: {
+      'import.meta.env.VITE_API_BASE_URL': JSON.stringify(
+        process.env.VITE_API_BASE_URL ||
+        (mode === 'development' ? 'http://localhost:8080/api' : 'https://soho-fragrance.vercel.app/api')
+      ),
+    },
     build: {
       sourcemap: emitSourcemaps ? 'inline' : false,
       minify: !emitSourcemaps,
